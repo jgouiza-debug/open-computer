@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opencomputer-local"
+version = "0.1.0"
+description = "Visible, local-first Windows computer use for open-source AI models"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = ["Pillow>=12.2,<13"]
+
+[project.scripts]
+opencomputer = "opencomputer.app:main"
+opencomputer-mcp = "opencomputer.mcp:main"
+opencomputer-setup = "opencomputer.setup:main"
+
+[project.urls]
+Repository = "https://github.com/jgouiza-debug/open-computer"
+Issues = "https://github.com/jgouiza-debug/open-computer/issues"
+
+[tool.setuptools.packages.find]
+include = ["opencomputer*"]

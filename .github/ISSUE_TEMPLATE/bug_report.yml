@@ -1,0 +1,46 @@
+name: Bug report
+description: Report a reproducible problem in Open Computer.
+title: '[Bug] '
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Remove tokens, personal paths, private screenshots, and model credentials.
+        Use SECURITY.md for vulnerabilities. Never attach connection.json.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Include what you expected and what actually happened.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Use a disposable app or demo mode where possible.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Windows and Python versions
+      placeholder: Windows 11, Python 3.14
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Where did the problem occur?
+      options:
+        - Demo / fake backend
+        - Native disposable fixture
+        - My selected desktop app
+        - Installation or agent connection
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized evidence
+      description: Include short error text or a screenshot containing only the test app.
