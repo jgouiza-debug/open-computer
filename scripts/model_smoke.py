@@ -65,8 +65,11 @@ class FixtureClient(LocalClient):
     def call(self, name: str, arguments: dict | None = None) -> object:
         if name not in self.allowed_actions | {"status", "get_window_state"}:
             raise RuntimeError("Action is outside the disposable fixture tool set")
+        capture_started = time.perf_counter()
         result = super().call(name, arguments)
+        transport_elapsed_ms = (time.perf_counter() - capture_started) * 1000
         if name == "get_window_state":
+            preparation_started = time.perf_counter()
             window = result.get("window", {})
             if (self.fixture_window is None or self.output is None or
                     window.get("id") != self.fixture_window["id"] or
@@ -79,8 +82,20 @@ class FixtureClient(LocalClient):
             directory.mkdir(exist_ok=True)
             stem = f"observation-{len(self.observations) + 1:03d}"
             record["image_file"] = f"observations/{stem}.png"
+            record["local_timing"] = {"transport_ms": round(transport_elapsed_ms, 3),
+                "decode_hash_prepare_ms": round((time.perf_counter() - preparation_started) * 1000, 3),
+                "png_write_ms": None, "json_write_ms": None,
+                "artifact_write_ms": None, "capture_total_ms": None}
+            writes_started = time.perf_counter()
             (directory / f"{stem}.png").write_bytes(png)
+            record["local_timing"]["png_write_ms"] = round((time.perf_counter() - writes_started) * 1000, 3)
+            json_started = time.perf_counter()
             (directory / f"{stem}.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
+            # Final timings live in the receipt's observation record. Do not
+            # rewrite this JSON just to time its own write: that would add I/O.
+            record["local_timing"]["json_write_ms"] = round((time.perf_counter() - json_started) * 1000, 3)
+            record["local_timing"]["artifact_write_ms"] = round((time.perf_counter() - writes_started) * 1000, 3)
+            record["local_timing"]["capture_total_ms"] = round((time.perf_counter() - capture_started) * 1000, 3)
             self.observations.append(record)
         return result
 
@@ -103,6 +118,24 @@ def input_evidence(events: list[dict], button_bounds: tuple[int, int, int, int],
             "model_task_actions_observed": typed_action and button_actions == 1,
             "typed_text_matches_expected": typed_text == TEST_TEXT,
             "fixture_assertions_passed": typed_text == TEST_TEXT and button_clicks == 1}
+
+
+def completion_passed(outcome: dict, evidence: dict, response_count: int,
+                      overlay_styles: list[dict]) -> bool:
+    """A model-selected stop is valid only after independently proven completion."""
+    result = outcome.get("result")
+    if (outcome.get("error") or outcome.get("cancelled") is True or
+            not isinstance(result, str) or not result.strip() or
+            result.startswith("Step limit reached")):
+        return False
+    if (evidence.get("fixture_assertions_passed") is not True or
+            evidence.get("model_task_actions_observed") is not True or
+            type(response_count) is not int or response_count < 1):
+        return False
+    required = ("transparent", "noactivate", "layered", "toolwindow")
+    return (isinstance(overlay_styles, list) and len(overlay_styles) == 2 and
+            all(isinstance(style, dict) and all(style.get(flag) is True for flag in required)
+                for style in overlay_styles))
 
 
 def endpoint_port(endpoint: str) -> int:
@@ -146,12 +179,16 @@ def endpoint_readiness(endpoint: str) -> dict:
 
 
 def run(output: Path, endpoint: str, model: str, max_steps: int,
-        wait_for_focus: int) -> dict:
+        wait_for_focus: int, performance_profile: str = "efficient",
+        max_image_edge: int = 1280, reasoning: str = "auto") -> dict:
     endpoint_port(endpoint)
     output = output / (time.strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8])
     receipt = {"passed": False, "fixture_assertions_passed": False,
                "live_model_requests": 0, "fixture_pid": os.getpid(),
                "endpoint": endpoint, "model": model, "max_steps": max_steps,
+               "performance_profile": performance_profile,
+               "requested_reasoning": reasoning,
+               "max_image_edge": 0 if performance_profile == "baseline" else max_image_edge,
                "expected_text": TEST_TEXT, "expected_button_clicks": 1,
                "locally_authorized": False, "backend": "windows",
                "input_action_attempts": 0,
@@ -203,8 +240,10 @@ def run(output: Path, endpoint: str, model: str, max_steps: int,
     overlay = None
     hotkey = None
     transcript: list[dict] = []
+    metrics: list[dict] = []
     action_events: list[dict] = []
     transcript_lock = threading.Lock()
+    metrics_lock = threading.Lock()
     closed = False
     started = False
     local_click = False
@@ -216,6 +255,12 @@ def run(output: Path, endpoint: str, model: str, max_steps: int,
         with transcript_lock:
             (output / "model-transcript.json").write_text(
                 json.dumps({"task": TASK, "turns": transcript}, indent=2), encoding="utf-8")
+
+    def record_metric(event: dict) -> None:
+        # The runner supplies only measurements, never task content or credentials.
+        with metrics_lock:
+            metrics.append(dict(event))
+            (output / "metrics.json").write_text(json.dumps({"events": metrics}, indent=2), encoding="utf-8")
 
     def cleanup(reason: str | None = None) -> None:
         nonlocal closed
@@ -255,7 +300,9 @@ def run(output: Path, endpoint: str, model: str, max_steps: int,
 
         def record_complete(call_endpoint: str, call_model: str,
                             messages: list[dict], tools: list[dict], *,
-                            cancel_event: threading.Event | None = None) -> dict:
+                            cancel_event: threading.Event | None = None,
+                            metrics_callback=None, performance_profile: str = "efficient",
+                            reasoning: str = "auto") -> dict:
             ready = endpoint_readiness(call_endpoint)
             status = controller.status()
             if closed or not status["armed"] or status["selected_window"]["id"] != fixture_id:
@@ -276,13 +323,23 @@ def run(output: Path, endpoint: str, model: str, max_steps: int,
                 raise RuntimeError("Model image must be this fixture's PNG observation")
             png = base64.b64decode(image_url.split(",", 1)[1], validate=True)
             digest = hashlib.sha256(png).hexdigest()
-            observation = next((record for record in reversed(client.observations)
-                                if record["sha256"] == digest), None)
+            observation = client.observations[-1] if client.observations else None
             if observation is None:
-                raise RuntimeError("Model image does not match any owned fixture capture")
+                raise RuntimeError("No owned fixture capture exists for the model image")
+            if observation["sha256"] != digest:
+                # Efficient views may be resized. Prove provenance with the same
+                # pure image-view helper; native originals remain untouched.
+                source = {key: value for key, value in observation.items()
+                          if key not in {"received_at", "sha256", "image_file", "local_timing"}}
+                source["image_base64"] = base64.b64encode((output / observation["image_file"]).read_bytes()).decode("ascii")
+                view = model_client.prepare_image_view(source,
+                    0 if performance_profile == "baseline" else max_image_edge)
+                if view.image_base64 != image_url.split(",", 1)[1]:
+                    raise RuntimeError("Model image is not the verified view of the current owned capture")
             image_file = f"model-visible-{turn['step']:03d}.png"
             (output / image_file).write_bytes(png)
             turn["model_visible_image"] = {"image_file": image_file, "sha256": digest,
+                "source_sha256": observation["sha256"],
                 "observation_id": observation.get("observation_id"),
                 "control_generation": observation.get("control_generation"),
                 "capture_received_at": observation["received_at"]}
@@ -290,7 +347,10 @@ def run(output: Path, endpoint: str, model: str, max_steps: int,
                 transcript.append(turn)
             try:
                 response = original_complete(call_endpoint, call_model, messages, tools,
-                                             cancel_event=cancel_event)
+                                             cancel_event=cancel_event,
+                                             metrics_callback=metrics_callback,
+                                             performance_profile=performance_profile,
+                                             reasoning=reasoning)
                 with transcript_lock:
                     turn["response"] = response
                     turn["response_received_at"] = time.time()
@@ -303,12 +363,17 @@ def run(output: Path, endpoint: str, model: str, max_steps: int,
                 save_transcript()
 
         model_client._complete = record_complete
+        runner_started = time.perf_counter()
         try:
             result = model_client.run_task(client, endpoint, model, TASK, max_steps=max_steps,
-                                           cancel_event=cancellation)
-            completed.put({"result": result})
+                                           cancel_event=cancellation,
+                                           metrics_callback=record_metric,
+                                           performance_profile=performance_profile,
+                                           max_image_edge=max_image_edge, reasoning=reasoning)
+            completed.put({"result": result, "runner_elapsed_ms": (time.perf_counter() - runner_started) * 1000})
         except Exception as exc:
-            completed.put({"error": f"{type(exc).__name__}: {exc}"})
+            completed.put({"error": f"{type(exc).__name__}: {exc}",
+                           "runner_elapsed_ms": (time.perf_counter() - runner_started) * 1000})
         finally:
             model_client._complete = original_complete
 
@@ -385,10 +450,6 @@ def run(output: Path, endpoint: str, model: str, max_steps: int,
             bx, by = button.winfo_rootx(), button.winfo_rooty()
             receipt.update(input_evidence(action_events,
                 (bx, by, bx + button.winfo_width(), by + button.winfo_height()), entry.get(), clicks.get()))
-            limited = outcome.get("result", "").startswith("Step limit reached")
-            receipt["passed"] = (receipt["fixture_assertions_passed"] and not outcome.get("error")
-                                 and not limited and outcome.get("result") != "Stopped"
-                                 and len(transcript) > 0 and receipt["model_task_actions_observed"])
             receipt["overlay_styles"] = []
             for surface in (overlay.border, overlay.pointer):
                 native, hwnd = surface.native
@@ -396,7 +457,8 @@ def run(output: Path, endpoint: str, model: str, max_steps: int,
                 receipt["overlay_styles"].append({"transparent": bool(style & 0x20),
                     "noactivate": bool(style & 0x08000000), "layered": bool(style & 0x80000),
                     "toolwindow": bool(style & 0x80)})
-            receipt["passed"] &= all(all(style.values()) for style in receipt["overlay_styles"])
+            receipt["passed"] = completion_passed(outcome, receipt,
+                sum("response" in turn for turn in transcript), receipt["overlay_styles"])
             # Capture only this process-owned client area; no surrounding desktop.
             capture = backend.capture(fixture_id)
             (output / "model-native-capture.png").write_bytes(base64.b64decode(capture["image_base64"]))
@@ -430,6 +492,8 @@ def run(output: Path, endpoint: str, model: str, max_steps: int,
         temporary.cleanup()
         receipt["live_model_requests"] = len(transcript)
         save_transcript()
+        with metrics_lock:
+            (output / "metrics.json").write_text(json.dumps({"events": metrics}, indent=2), encoding="utf-8")
         (output / "model-receipt.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
     return receipt
 
@@ -441,6 +505,10 @@ def main() -> int:
     parser.add_argument("--endpoint", default="http://127.0.0.1:8153/v1")
     parser.add_argument("--model", default="flash-next-q2-huihui-dual-amd")
     parser.add_argument("--max-steps", type=int, default=8)
+    parser.add_argument("--performance-profile", choices=("baseline", "efficient"), default="efficient")
+    parser.add_argument("--max-image-edge", type=int, default=1280, help="Model image edge cap; 0 keeps native pixels")
+    parser.add_argument("--reasoning", choices=("auto", "off"), default="auto",
+                        help="Off requests enable_thinking=false on compatible local templates only")
     parser.add_argument("--output", type=Path, default=Path("artifacts/model-smoke"))
     options = parser.parse_args()
     if not options.run:
@@ -451,12 +519,15 @@ def main() -> int:
         parser.error("--wait-for-focus must be from 1 to 60 seconds")
     if not 1 <= options.max_steps <= 8:
         parser.error("--max-steps must be from 1 to 8")
+    if options.max_image_edge != 0 and not 128 <= options.max_image_edge <= 8192:
+        parser.error("--max-image-edge must be 0 or between 128 and 8192")
     try:
         endpoint_port(options.endpoint)
     except ValueError as exc:
         parser.error(str(exc))
     receipt = run(options.output, options.endpoint, options.model, options.max_steps,
-                  options.wait_for_focus)
+                  options.wait_for_focus, options.performance_profile, options.max_image_edge,
+                  options.reasoning)
     print(json.dumps(receipt, indent=2))
     return 0 if receipt["passed"] else 1
 

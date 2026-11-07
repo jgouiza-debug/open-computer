@@ -1,16 +1,26 @@
 """MCP protocol and local model boundary tests with deterministic fixtures."""
 
 import io
+import base64
+import contextlib
 import copy
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import threading
+import time
+from pathlib import Path
+import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from opencomputer.mcp import ClientError, LocalClient, content_blocks, handle_message, serve_stdio
-from opencomputer.model_client import _complete, _model_message, _check_authority, _settled_observation, run_task, RunCancelled
+from opencomputer.model_client import (
+    _append_observation, _capture_message, _complete, _model_message, _check_authority, _read_observation,
+    _settled_observation, build_model_tools, build_model_request, encode_model_request,
+    prepare_image_view, ImageView, run_task, RunCancelled,
+    main as model_main,
+)
 
 
 class FakeClient:
@@ -34,7 +44,7 @@ class FakeClient:
                     "selected_window": {"id": "fixture", "pid": 7}}
         if name == "get_window_state":
             self.observations += 1
-            return {"observation_id": f"obs-{self.observations}", "control_generation": self.generation, "controller_instance_id": self.instance_id, "window": {"id": "fixture", "pid": 7, "rect": dict(self.rect)}, "image_base64": self.image, "mime_type": "image/png"}
+            return {"observation_id": f"obs-{self.observations}", "armed": self.armed, "control_generation": self.generation, "controller_instance_id": self.instance_id, "window": {"id": "fixture", "pid": 7, "rect": dict(self.rect)}, "image_base64": self.image, "mime_type": "image/png"}
         if name == "bad":
             raise ClientError("stale_observation", "Observe again")
         return {"ok": True}
@@ -44,14 +54,49 @@ class McpTests(unittest.TestCase):
     @staticmethod
     def wait_http_ready(port: int) -> None:
         # A completed harmless request proves the listening thread is servicing
-        # connections before a cancellation timing assertion starts.
-        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        try:
-            connection.request("GET", "/fixture-ready")
-            response = connection.getresponse()
-            response.read()
-        finally:
-            connection.close()
+        # connections before a cancellation timing assertion starts. Windows can
+        # transiently delay the first loopback connection; only this read-only
+        # readiness GET may retry, never a model or desktop input request.
+        deadline = time.monotonic() + 8.0
+        last_cause = None
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=min(1.0, remaining))
+            try:
+                connection.request("GET", "/fixture-ready")
+                response = connection.getresponse()
+                response.read()
+                return
+            except (OSError, http.client.HTTPException) as exc:
+                last_cause = exc
+            finally:
+                connection.close()
+            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        raise AssertionError(f"HTTP fixture readiness deadline expired; last cause: {type(last_cause).__name__}: {last_cause}") from last_cause
+
+    def test_readiness_retries_only_get_after_transient_connect_failure(self) -> None:
+        failed, ready = Mock(), Mock()
+        failed.request.side_effect = TimeoutError("transient startup")
+        with patch("http.client.HTTPConnection", side_effect=[failed, ready]) as connections, \
+                patch.object(time, "sleep"):
+            self.wait_http_ready(1)
+        self.assertEqual(connections.call_count, 2)
+        failed.request.assert_called_once_with("GET", "/fixture-ready")
+        ready.request.assert_called_once_with("GET", "/fixture-ready")
+        failed.close.assert_called_once()
+        ready.close.assert_called_once()
+
+    def test_readiness_deadline_reports_last_connection_cause(self) -> None:
+        connection = Mock()
+        connection.request.side_effect = TimeoutError("bounded fixture startup")
+        with patch("http.client.HTTPConnection", return_value=connection), \
+                patch.object(time, "monotonic", side_effect=[0, 0, 9, 9]), \
+                patch.object(time, "sleep"):
+            with self.assertRaisesRegex(AssertionError, "TimeoutError: bounded fixture startup"):
+                self.wait_http_ready(1)
+        connection.request.assert_called_once_with("GET", "/fixture-ready")
 
     def test_initialize_tools_and_image_blocks(self) -> None:
         client = FakeClient()
@@ -123,7 +168,7 @@ class McpTests(unittest.TestCase):
         client = FakeClient()
         captured = []
 
-        def complete(endpoint, model, messages, tools):
+        def complete(endpoint, model, messages, tools, **options):
             captured.append(copy.deepcopy(messages))
             return self.click_reply() if len(captured) == 1 else {"content": "The button changed"}
 
@@ -155,7 +200,7 @@ class McpTests(unittest.TestCase):
     def test_disarm_while_model_generates_prevents_action(self) -> None:
         client = FakeClient()
 
-        def complete(*args):
+        def complete(*args, **options):
             client.armed = False
             return self.click_reply()
 
@@ -175,7 +220,7 @@ class McpTests(unittest.TestCase):
         for change in ("pixels", "geometry"):
             client = FakeClient()
 
-            def complete(*args):
+            def complete(*args, **options):
                 if change == "pixels":
                     client.image = "different"
                 else:
@@ -191,7 +236,7 @@ class McpTests(unittest.TestCase):
     def test_stop_then_rearm_same_window_does_not_resurrect_old_model_reply(self) -> None:
         client = FakeClient()
 
-        def complete(*args):
+        def complete(*args, **options):
             client.generation += 2
             return self.click_reply()
 
@@ -203,7 +248,7 @@ class McpTests(unittest.TestCase):
     def test_controller_restart_does_not_resurrect_old_model_reply(self) -> None:
         client = FakeClient()
 
-        def complete(*args):
+        def complete(*args, **options):
             client.instance_id = "new-controller"
             return self.click_reply()
 
@@ -223,7 +268,7 @@ class McpTests(unittest.TestCase):
                 client.image = next(captures)
             return original_call(name, arguments)
 
-        def complete(endpoint, model, messages, tools):
+        def complete(endpoint, model, messages, tools, **options):
             image = messages[-1]["content"][1]["image_url"]["url"]
             model_images.append(image)
             return {"content": "Observed completed input"}
@@ -243,10 +288,64 @@ class McpTests(unittest.TestCase):
             return original_call(name, arguments)
 
         with patch.object(client, "call", side_effect=call), patch("opencomputer.model_client._complete") as complete:
-            with self.assertRaisesRegex(RuntimeError, "did not settle"):
+            with self.assertRaisesRegex(RuntimeError, "Observation budget expired"):
                 run_task(client, "http://127.0.0.1:8080/v1", "fixture", "Inspect")
         complete.assert_not_called()
         self.assertEqual(client.calls[-1][0], "stop")
+
+    def test_atomic_capture_uses_one_rpc_and_rejects_revoked_fields(self) -> None:
+        client = FakeClient()
+        authority = _check_authority(client)
+        state = client.call("get_window_state")
+        invalid_states = [
+            {**state, "armed": False},
+            {**state, "control_generation": state["control_generation"] + 1},
+            {**state, "controller_instance_id": "replacement"},
+            {**state, "window": {**state["window"], "id": "other"}},
+            {**state, "window": {**state["window"], "pid": 8}},
+        ]
+        for invalid in invalid_states:
+            with self.subTest(invalid=invalid), patch.object(client, "call", return_value=invalid) as call:
+                with self.assertRaises(RunCancelled):
+                    _read_observation(client, authority, None)
+                call.assert_called_once_with("get_window_state")
+        with patch.object(client, "call", return_value=state) as call:
+            self.assertEqual(_read_observation(client, authority, None), state)
+            call.assert_called_once_with("get_window_state")
+
+    def test_atomic_capture_checks_cancellation_before_and_after_rpc(self) -> None:
+        client = FakeClient()
+        authority = _check_authority(client)
+        state = client.call("get_window_state")
+        cancel = threading.Event()
+        cancel.set()
+        with patch.object(client, "call", return_value=state) as call:
+            with self.assertRaises(RunCancelled):
+                _read_observation(client, authority, cancel)
+            call.assert_not_called()
+        cancel.clear()
+
+        def cancelled_capture(name):
+            cancel.set()
+            return state
+
+        with patch.object(client, "call", side_effect=cancelled_capture):
+            with self.assertRaises(RunCancelled):
+                _read_observation(client, authority, cancel)
+
+    def test_observation_failure_reports_budget_not_pixel_instability(self) -> None:
+        client = FakeClient()
+        authority = _check_authority(client)
+        events = []
+        with patch("opencomputer.model_client.time.monotonic", side_effect=[0, 0, 1, 3]), \
+                patch("opencomputer.model_client.time.sleep"):
+            with self.assertRaisesRegex(RuntimeError, "2 captures, 2 consecutive matches"):
+                _settled_observation(client, authority, None, events.append)
+        self.assertEqual(events[0]["status"], "budget_exceeded")
+        self.assertEqual(events[0]["captures"], 2)
+        self.assertEqual(events[0]["consecutive_matches"], 2)
+        self.assertEqual(events[0]["frame_changes"], 0)
+        self.assertIn("capture_call_total_ms", events[0])
 
     def test_initial_status_failure_preserves_error_if_stop_also_fails(self) -> None:
         client = FakeClient()
@@ -295,6 +394,43 @@ class McpTests(unittest.TestCase):
         self.assertEqual(requests[0][0], "/v1/chat/completions")
         self.assertFalse(requests[0][1]["stream"])
         self.assertEqual(requests[0][1]["max_tokens"], 1024)
+
+    def test_transport_metrics_report_only_server_usage_and_sizes(self) -> None:
+        events = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                raw = json.dumps({"choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                    "usage": {"prompt_tokens": 150, "completion_tokens": 12, "total_tokens": 162,
+                              "prompt_tokens_details": {"cached_tokens": 100},
+                              "completion_tokens_details": {"reasoning_tokens": 4},
+                              "secret": "must never appear in metrics"}}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            self.wait_http_ready(server.server_port)
+            result = _complete(f"http://127.0.0.1:{server.server_port}/v1", "fake", [], [], metrics_callback=events.append)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(2)
+        self.assertEqual(result, {"role": "assistant", "content": "ok"})
+        self.assertEqual(events[0]["server_usage"], {"prompt_tokens": 150, "completion_tokens": 12,
+                         "total_tokens": 162, "cached_tokens": 100, "reasoning_tokens": 4})
+        self.assertEqual(events[0]["usage_source"], "server")
+        self.assertEqual(events[0]["requested_reasoning"], "auto")
+        self.assertGreater(events[0]["request_bytes"], 0)
+        self.assertNotIn("must never", json.dumps(events))
 
     def test_cancel_interrupts_waiting_http_request(self) -> None:
         entered, release, cancel = threading.Event(), threading.Event(), threading.Event()
@@ -347,6 +483,149 @@ class McpTests(unittest.TestCase):
         with patch("http.client.HTTPConnection.connect", side_effect=AssertionError("must not connect")):
             with self.assertRaises(RunCancelled):
                 _complete("http://127.0.0.1:9/v1", "fake", [], [], cancel_event=cancel)
+
+
+class ImageAndContextTests(unittest.TestCase):
+    @staticmethod
+    def state(width=101, height=53) -> dict:
+        from PIL import Image
+        stream = io.BytesIO()
+        Image.new("RGB", (width, height), "#102030").save(stream, format="PNG")
+        return {"observation_id": "new", "image_base64": base64.b64encode(stream.getvalue()).decode(),
+                "mime_type": "image/png", "rect": {"width": width, "height": height},
+                "window": {"id": "owned", "pid": 7, "rect": {"width": width, "height": height}},
+                "control_generation": 3, "controller_instance_id": "opaque-private-instance"}
+
+    def test_odd_dimensions_downscale_without_mutating_original(self) -> None:
+        state = self.state()
+        original = copy.deepcopy(state)
+        view = prepare_image_view(state, 64)
+        self.assertEqual((view.image_width, view.image_height), (64, 33))
+        self.assertEqual((view.source_width, view.source_height), (101, 53))
+        self.assertEqual(state, original)
+        from PIL import Image
+        with Image.open(io.BytesIO(base64.b64decode(view.image_base64))) as image:
+            self.assertEqual(image.size, (64, 33))
+        arguments = view.native_arguments("drag", {"x": 0, "y": 0, "to_x": 63, "to_y": 32})
+        self.assertEqual(arguments, {"x": 0, "y": 0, "to_x": 100, "to_y": 52})
+
+    def test_all_coordinate_actions_map_pixel_centers_and_reject_invalid_points(self) -> None:
+        view = ImageView("png", 50, 25, 100, 50)
+        for action in ("click", "move", "scroll", "drag"):
+            args = {"x": 49, "y": 24, **({"to_x": 0, "to_y": 0} if action == "drag" else {})}
+            result = view.native_arguments(action, args)
+            self.assertEqual((result["x"], result["y"]), (99, 49))
+            for invalid in (True, 1.5, -1, 50):
+                with self.subTest(action=action, invalid=invalid), self.assertRaises(RuntimeError):
+                    view.native_arguments(action, {**args, "x": invalid})
+        self.assertEqual(view.native_arguments("type_text", {"text": "hello"}), {"text": "hello"})
+
+    def test_native_and_tiny_views_never_produce_zero_dimensions(self) -> None:
+        state = self.state(101, 1)
+        tiny = prepare_image_view(state, 1)
+        self.assertEqual((tiny.image_width, tiny.image_height), (1, 1))
+        native = prepare_image_view(state, 0)
+        self.assertEqual(native.image_base64, state["image_base64"])
+        self.assertEqual(native.native_arguments("click", {"x": 100, "y": 0}), {"x": 100, "y": 0})
+        for width in (0, -1, True):
+            invalid = {**state, "rect": {"width": width, "height": 1}}
+            with self.assertRaises(RuntimeError):
+                prepare_image_view(invalid)
+
+    def test_compact_metadata_and_schemas_preserve_contract(self) -> None:
+        state = self.state()
+        efficient = _capture_message(state)
+        text = efficient["content"][0]["text"].split(": ", 1)[1]
+        self.assertEqual(json.loads(text), {"observation_id": "new", "image_width": 101, "image_height": 53})
+        self.assertNotIn("opaque-private-instance", text)
+        baseline = _capture_message(state, performance_profile="baseline")
+        self.assertIn("opaque-private-instance", baseline["content"][0]["text"])
+        definitions = FakeClient().tools()
+        compact = build_model_tools(definitions)
+        self.assertEqual(compact[0]["function"]["parameters"], definitions[0]["inputSchema"])
+        body = build_model_request("model", [efficient], compact)
+        self.assertEqual(json.loads(encode_model_request(body)), json.loads(encode_model_request(body, performance_profile="baseline")))
+        self.assertLess(len(encode_model_request(body)), len(encode_model_request(body, performance_profile="baseline")))
+
+    def test_reasoning_override_is_explicit_and_auto_preserves_wire_contract(self) -> None:
+        baseline = {"model": "model", "messages": [], "tools": [], "tool_choice": "auto",
+                    "parallel_tool_calls": False, "temperature": 0.1, "stream": False, "max_tokens": 1024}
+        self.assertEqual(build_model_request("model", [], []), baseline)
+        self.assertEqual(build_model_request("model", [], [], reasoning="auto"), baseline)
+        self.assertEqual(build_model_request("model", [], [], reasoning="off"),
+                         {**baseline, "chat_template_kwargs": {"enable_thinking": False}})
+        for invalid in (None, "on", "low", {}, False):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                build_model_request("model", [], [], reasoning=invalid)
+
+    def test_run_forwards_reasoning_off_without_changing_authority(self) -> None:
+        client = FakeClient()
+        with patch("opencomputer.model_client._complete", return_value={"content": "Observed fixture"}) as complete:
+            run_task(client, "http://127.0.0.1:9/v1", "model", "Inspect", reasoning="off")
+        self.assertEqual(complete.call_args.kwargs["reasoning"], "off")
+        self.assertEqual(client.calls[-1][0], "stop")
+        self.assertFalse(any(name == "click" for name, _ in client.calls))
+
+    def test_history_budget_drops_whole_pairs_and_preserves_task_latest_action(self) -> None:
+        messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": "original task"}]
+        events = []
+        state = self.state()
+        for index in range(7):
+            _append_observation(messages, state, metrics_callback=events.append)
+            call = {"id": f"call-{index}", "type": "function", "function": {"name": "type_text", "arguments": json.dumps({"text": "x" * 5000})}}
+            messages.extend([{"role": "assistant", "tool_calls": [call], "content": ""},
+                             {"role": "tool", "tool_call_id": call["id"], "content": "ok"}])
+        _append_observation(messages, state, metrics_callback=events.append)
+        self.assertEqual(messages[:2], [{"role": "system", "content": "rules"}, {"role": "user", "content": "original task"}])
+        pairs = messages[2:-1]
+        self.assertEqual(len(pairs), 2)
+        self.assertEqual(pairs[0]["tool_calls"][0]["id"], "call-6")
+        self.assertEqual(pairs[1]["tool_call_id"], "call-6")
+        self.assertGreater(sum(event["dropped_action_groups"] for event in events), 0)
+
+    def test_baseline_keeps_native_image_full_metadata_and_history(self) -> None:
+        state = self.state()
+        messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": "task"}]
+        for index in range(6):
+            _append_observation(messages, state, performance_profile="baseline")
+            call = {"id": str(index), "type": "function", "function": {"name": "click", "arguments": "{}"}}
+            messages.extend([{"role": "assistant", "tool_calls": [call]}, {"role": "tool", "tool_call_id": str(index), "content": "ok"}])
+        _append_observation(messages, state, performance_profile="baseline")
+        self.assertEqual(sum(message["role"] == "tool" for message in messages), 6)
+        images = [part for message in messages if isinstance(message.get("content"), list)
+                  for part in message["content"] if part["type"] == "image_url"]
+        self.assertEqual(len(images), 1)
+        self.assertTrue(images[0]["image_url"]["url"].endswith(state["image_base64"]))
+
+    def test_cli_metrics_are_opt_in_and_written_on_failure_without_prompts(self) -> None:
+        def fail(*args, **options):
+            options["metrics_callback"]({"phase": "model", "elapsed_ms": 3, "server_usage": {}, "usage_source": "unavailable"})
+            raise RuntimeError("fixture failure")
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "metrics.json"
+            stderr = io.StringIO()
+            with patch("opencomputer.model_client.LocalClient.from_file", return_value=FakeClient()), \
+                    patch("opencomputer.model_client.run_task", side_effect=fail), contextlib.redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as error:
+                    model_main(["private task must not enter metrics", "--model", "fake", "--metrics-json", str(path)])
+            self.assertEqual(error.exception.code, 1)
+            report = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "error")
+            self.assertEqual(report["events"][0]["elapsed_ms"], 3)
+            self.assertNotIn("private task", json.dumps(report))
+            self.assertIn("fixture failure", stderr.getvalue())
+
+    def test_cli_metrics_write_failure_is_visible(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            stderr = io.StringIO()
+            with patch("opencomputer.model_client.LocalClient.from_file", return_value=FakeClient()), \
+                    patch("opencomputer.model_client.run_task", return_value="Model response: ok"), \
+                    contextlib.redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as error:
+                    model_main(["task", "--model", "fake", "--metrics-json", directory])
+            self.assertEqual(error.exception.code, 1)
+            self.assertIn("Could not write performance metrics", stderr.getvalue())
 
 
 if __name__ == "__main__":

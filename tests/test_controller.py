@@ -1,9 +1,12 @@
 import os
+import base64
+import random
 import sys
 import threading
 import time
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from opencomputer.backend import BackendCancelled, BackendError, FakeBackend, WindowsBackend, parse_key
 from opencomputer.controller import Controller, ControllerError
@@ -376,6 +379,86 @@ class BackendSafetyTests(unittest.TestCase):
         self.assertEqual(self.backend._window_title(123, os.getpid(), other_thread), "Window 123")
         self.backend._title_cache[(123, os.getpid(), other_thread)] = "Cached fixture"
         self.assertEqual(self.backend._window_title(123, os.getpid(), other_thread), "Cached fixture")
+
+
+class CaptureEncodingTests(unittest.TestCase):
+    def setUp(self):
+        from PIL import Image
+        self.backend = WindowsBackend.__new__(WindowsBackend)
+        self.backend._capture_cache = None
+        self.backend._capture_cache_lock = threading.Lock()
+        self.backend._capture_cache_limit = 32 * 1024 * 1024
+        self.window = {"id": "1", "pid": 42, "rect": FakeBackend().window["rect"]}
+        self.window["rect"].update(width=16, height=16, right=116, bottom=116)
+        self.backend.get_window = lambda window_id: {**self.window, "id": str(window_id)}
+        self.image = Image.new("RGB", (16, 16), "#102030")
+
+    def test_unchanged_frame_reuses_original_png_but_always_grabs_fresh_pixels(self):
+        expected = self.backend._encode_png(self.image)
+        with patch("PIL.ImageGrab.grab", return_value=self.image) as grab, \
+                patch.object(self.backend, "_encode_png", wraps=self.backend._encode_png) as encode:
+            first = self.backend.capture("1")
+            second = self.backend.capture("1")
+        self.assertEqual(first["image_base64"], expected)
+        self.assertEqual(second["image_base64"], expected)
+        self.assertEqual(grab.call_count, 2)
+        self.assertEqual(encode.call_count, 1)
+
+    def test_changed_pixel_geometry_target_or_pid_invalidates_encoding(self):
+        with patch("PIL.ImageGrab.grab", return_value=self.image), \
+                patch.object(self.backend, "_encode_png", wraps=self.backend._encode_png) as encode:
+            original = self.backend.capture("1")
+            self.image.putpixel((1, 1), (255, 0, 0))
+            changed = self.backend.capture("1")
+            self.assertNotEqual(original["image_base64"], changed["image_base64"])
+            self.window["rect"]["x"] += 1
+            self.backend.capture("1")
+            self.backend.capture("2")
+            self.window["pid"] += 1
+            self.backend.capture("2")
+        self.assertEqual(encode.call_count, 5)
+
+    def test_cache_budget_includes_raw_pixels_and_base64(self):
+        from PIL import Image
+        image = Image.frombytes("RGB", (16, 16), random.Random(42).randbytes(16 * 16 * 3))
+        self.backend._capture_cache_limit = 1500
+        with patch("PIL.ImageGrab.grab", return_value=image):
+            state = self.backend.capture("1")
+        self.assertGreater(len(image.tobytes()) + len(state["image_base64"]), 1500)
+        self.assertIsNone(self.backend._capture_cache)
+        self.assertTrue(base64.b64decode(state["image_base64"]).startswith(b"\x89PNG"))
+
+    def test_oversized_image_skips_raw_copy_and_is_not_cached(self):
+        self.backend._capture_cache_limit = 100
+        with patch("PIL.ImageGrab.grab", return_value=self.image), \
+                patch.object(self.image, "tobytes", side_effect=AssertionError("Oversized raw copy")):
+            self.backend.capture("1")
+        self.assertIsNone(self.backend._capture_cache)
+
+    def test_capture_error_or_geometry_change_clears_cache(self):
+        with patch("PIL.ImageGrab.grab", return_value=self.image):
+            self.backend.capture("1")
+        self.assertIsNotNone(self.backend._capture_cache)
+        with patch("PIL.ImageGrab.grab", side_effect=OSError("Capture failed")):
+            with self.assertRaises(OSError):
+                self.backend.capture("1")
+        self.assertIsNone(self.backend._capture_cache)
+        with patch("PIL.ImageGrab.grab", return_value=self.image):
+            self.backend.capture("1")
+            changed = {**self.window, "rect": {**self.window["rect"], "x": 99}}
+            with patch.object(self.backend, "get_window", side_effect=[self.window, changed]):
+                with self.assertRaises(BackendError):
+                    self.backend.capture("1")
+        self.assertIsNone(self.backend._capture_cache)
+
+    def test_concurrent_identical_encodings_share_one_cache_entry(self):
+        from concurrent.futures import ThreadPoolExecutor
+        with patch("PIL.ImageGrab.grab", return_value=self.image), \
+                patch.object(self.backend, "_encode_png", wraps=self.backend._encode_png) as encode:
+            with ThreadPoolExecutor(max_workers=2) as workers:
+                results = list(workers.map(self.backend.capture, ["1", "1"]))
+        self.assertEqual(results[0]["image_base64"], results[1]["image_base64"])
+        self.assertEqual(encode.call_count, 1)
 
 
 @unittest.skipUnless(sys.platform == "win32", "Windows caption/controller lock regression")

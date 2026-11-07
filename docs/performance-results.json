@@ -1,0 +1,341 @@
+{
+  "schema_version": 1,
+  "measured_on": "2026-11-07",
+  "scope": "One local Windows setup, saved owned fixture, two responses per ABBA profile; not a cross-model benchmark.",
+  "units": "Tokens are raw server-reported counters; pixels and encoded bytes are separate measurements.",
+  "portable_defaults": {
+    "performance_profile": "efficient",
+    "max_image_edge": 1280,
+    "reasoning": "auto"
+  },
+  "read_only_comparisons": [
+    {
+      "name": "compact_640_auto",
+      "order": "ABBA",
+      "tool_dispatch": false,
+      "calls": [
+        {
+          "order": "A",
+          "profile": "baseline",
+          "requested_reasoning": "auto",
+          "image_width": 720,
+          "image_height": 440,
+          "request_bytes": 16687,
+          "model_elapsed_ms": 9062.052,
+          "server_usage": {
+            "prompt_tokens": 1161,
+            "completion_tokens": 293,
+            "total_tokens": 1454,
+            "cached_tokens": 0
+          },
+          "reasoning_characters": 1049,
+          "proposed_tool_names": [
+            "type_text"
+          ]
+        },
+        {
+          "order": "B",
+          "profile": "efficient",
+          "requested_reasoning": "auto",
+          "image_width": 640,
+          "image_height": 391,
+          "request_bytes": 54007,
+          "model_elapsed_ms": 14126.68,
+          "server_usage": {
+            "prompt_tokens": 849,
+            "completion_tokens": 284,
+            "total_tokens": 1133,
+            "cached_tokens": 0
+          },
+          "reasoning_characters": 944,
+          "proposed_tool_names": [
+            "type_text"
+          ]
+        },
+        {
+          "order": "B",
+          "profile": "efficient",
+          "requested_reasoning": "auto",
+          "image_width": 640,
+          "image_height": 391,
+          "request_bytes": 54007,
+          "model_elapsed_ms": 11095.719,
+          "server_usage": {
+            "prompt_tokens": 849,
+            "completion_tokens": 600,
+            "total_tokens": 1449,
+            "cached_tokens": 844
+          },
+          "reasoning_characters": 2388,
+          "proposed_tool_names": [
+            "type_text"
+          ]
+        },
+        {
+          "order": "A",
+          "profile": "baseline",
+          "requested_reasoning": "auto",
+          "image_width": 720,
+          "image_height": 440,
+          "request_bytes": 16687,
+          "model_elapsed_ms": 6132.823,
+          "server_usage": {
+            "prompt_tokens": 1161,
+            "completion_tokens": 272,
+            "total_tokens": 1433,
+            "cached_tokens": 1156
+          },
+          "reasoning_characters": 903,
+          "proposed_tool_names": [
+            "type_text"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "compact_native_auto",
+      "order": "ABBA",
+      "tool_dispatch": false,
+      "calls": [
+        {
+          "order": "A",
+          "profile": "baseline",
+          "requested_reasoning": "auto",
+          "image_width": 720,
+          "image_height": 440,
+          "request_bytes": 16687,
+          "model_elapsed_ms": 5478.706,
+          "server_usage": {
+            "prompt_tokens": 1161,
+            "completion_tokens": 266,
+            "total_tokens": 1427,
+            "cached_tokens": 1156
+          },
+          "reasoning_characters": 922,
+          "proposed_tool_names": [
+            "type_text"
+          ]
+        },
+        {
+          "order": "B",
+          "profile": "efficient",
+          "requested_reasoning": "auto",
+          "image_width": 720,
+          "image_height": 440,
+          "request_bytes": 15999,
+          "model_elapsed_ms": 8826.505,
+          "server_usage": {
+            "prompt_tokens": 931,
+            "completion_tokens": 294,
+            "total_tokens": 1225,
+            "cached_tokens": 0
+          },
+          "reasoning_characters": 969,
+          "proposed_tool_names": [
+            "type_text"
+          ]
+        },
+        {
+          "order": "B",
+          "profile": "efficient",
+          "requested_reasoning": "auto",
+          "image_width": 720,
+          "image_height": 440,
+          "request_bytes": 15999,
+          "model_elapsed_ms": 2660.302,
+          "server_usage": {
+            "prompt_tokens": 931,
+            "completion_tokens": 90,
+            "total_tokens": 1021,
+            "cached_tokens": 926
+          },
+          "reasoning_characters": 82,
+          "proposed_tool_names": [
+            "type_text"
+          ]
+        },
+        {
+          "order": "A",
+          "profile": "baseline",
+          "requested_reasoning": "auto",
+          "image_width": 720,
+          "image_height": 440,
+          "request_bytes": 16687,
+          "model_elapsed_ms": 8999.422,
+          "server_usage": {
+            "prompt_tokens": 1161,
+            "completion_tokens": 510,
+            "total_tokens": 1671,
+            "cached_tokens": 1156
+          },
+          "reasoning_characters": 1969,
+          "proposed_tool_names": [
+            "type_text"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "compact_640_reasoning_off",
+      "order": "ABBA",
+      "tool_dispatch": false,
+      "calls": [
+        {
+          "order": "A",
+          "profile": "baseline",
+          "requested_reasoning": "auto",
+          "image_width": 720,
+          "image_height": 440,
+          "request_bytes": 16687,
+          "model_elapsed_ms": 5342.927,
+          "server_usage": {
+            "prompt_tokens": 1161,
+            "completion_tokens": 276,
+            "total_tokens": 1437,
+            "cached_tokens": 1156
+          },
+          "reasoning_characters": 982,
+          "proposed_tool_names": [
+            "type_text"
+          ]
+        },
+        {
+          "order": "B",
+          "profile": "efficient",
+          "requested_reasoning": "off",
+          "image_width": 640,
+          "image_height": 391,
+          "request_bytes": 54056,
+          "model_elapsed_ms": 5015.33,
+          "server_usage": {
+            "prompt_tokens": 813,
+            "completion_tokens": 70,
+            "total_tokens": 883,
+            "cached_tokens": 0
+          },
+          "reasoning_characters": 0,
+          "proposed_tool_names": [
+            "type_text"
+          ]
+        },
+        {
+          "order": "B",
+          "profile": "efficient",
+          "requested_reasoning": "off",
+          "image_width": 640,
+          "image_height": 391,
+          "request_bytes": 54056,
+          "model_elapsed_ms": 2470.491,
+          "server_usage": {
+            "prompt_tokens": 813,
+            "completion_tokens": 70,
+            "total_tokens": 883,
+            "cached_tokens": 806
+          },
+          "reasoning_characters": 0,
+          "proposed_tool_names": [
+            "type_text"
+          ]
+        },
+        {
+          "order": "A",
+          "profile": "baseline",
+          "requested_reasoning": "auto",
+          "image_width": 720,
+          "image_height": 440,
+          "request_bytes": 16687,
+          "model_elapsed_ms": 7569.424,
+          "server_usage": {
+            "prompt_tokens": 1161,
+            "completion_tokens": 404,
+            "total_tokens": 1565,
+            "cached_tokens": 1156
+          },
+          "reasoning_characters": 1497,
+          "proposed_tool_names": [
+            "type_text"
+          ]
+        }
+      ]
+    }
+  ],
+  "native_fast_fixture": {
+    "performance_profile": "efficient",
+    "max_image_edge": 640,
+    "requested_reasoning": "off",
+    "native_goal_verified": true,
+    "typed_text_exact_match": true,
+    "button_clicks": 1,
+    "model_task_actions_observed": true,
+    "received_model_responses": 3,
+    "model_selected_terminal": "Stopped",
+    "final_stopped": true,
+    "final_armed": false,
+    "original_harness_passed": false,
+    "pure_corrected_assessment_passed": true,
+    "replayed_after_verdict_fix": false,
+    "verdict_note": "The original harness rejected a model-selected Stop despite completed native assertions. Original evidence was retained; a separate pure-helper assessment corrects that verdict.",
+    "model_call_total_ms": 25621.9,
+    "runner_elapsed_ms": 26799.199,
+    "observation_elapsed_ms": [
+      284.08,
+      344.83,
+      353.407
+    ],
+    "model_server_usage": [
+      {
+        "prompt_tokens": 935,
+        "completion_tokens": 69,
+        "total_tokens": 1004,
+        "cached_tokens": 0
+      },
+      {
+        "prompt_tokens": 1055,
+        "completion_tokens": 82,
+        "total_tokens": 1137,
+        "cached_tokens": 0
+      },
+      {
+        "prompt_tokens": 1184,
+        "completion_tokens": 34,
+        "total_tokens": 1218,
+        "cached_tokens": 0
+      }
+    ]
+  },
+  "python_unchanged_frame_capture_cache": {
+    "samples_per_case": 20,
+    "statistic": "median",
+    "native_input": false,
+    "model_requests": false,
+    "cases": [
+      {
+        "width": 720,
+        "height": 440,
+        "uncached_ms": 7.521,
+        "cached_ms": 3.452
+      },
+      {
+        "width": 1280,
+        "height": 800,
+        "uncached_ms": 19.696,
+        "cached_ms": 9.124
+      },
+      {
+        "width": 1920,
+        "height": 1080,
+        "uncached_ms": 36.128,
+        "cached_ms": 18.261
+      }
+    ],
+    "note": "Each capture still reads fresh pixels and checks identity/geometry; only unchanged lossless encoding is reused."
+  },
+  "limits": [
+    "Cache state and completion lengths differ; timings do not isolate individual causes.",
+    "The earlier 640px automatic-reasoning sample was slower despite fewer prompt tokens.",
+    "Read-only next-action proposals do not prove full desktop task quality.",
+    "The native fixture proves its specific configuration and task, not arbitrary applications.",
+    "Reasoning off is an opt-in compatible-template extension, not universal OpenAI API behavior.",
+    "No Rust performance result is claimed here."
+  ]
+}

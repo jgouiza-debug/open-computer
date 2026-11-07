@@ -84,9 +84,9 @@ def content_blocks(result: object) -> list[dict]:
     """Expose captures as native MCP image blocks plus textual observation metadata."""
     if isinstance(result, dict) and "image_base64" in result:
         metadata = {key: value for key, value in result.items() if key != "image_base64"}
-        return [{"type": "text", "text": json.dumps(metadata)},
+        return [{"type": "text", "text": json.dumps(metadata, separators=(",", ":"), ensure_ascii=False)},
                 {"type": "image", "data": result["image_base64"], "mimeType": result.get("mime_type", "image/png")}]
-    return [{"type": "text", "text": json.dumps(result)}]
+    return [{"type": "text", "text": json.dumps(result, separators=(",", ":"), ensure_ascii=False)}]
 
 
 def handle_message(message: object, client: LocalClient) -> dict | None:

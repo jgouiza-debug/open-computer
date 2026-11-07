@@ -127,6 +127,34 @@ Select and arm the intended window locally before requesting input actions.
 The runner does not load models, start model servers, or arm control. Model and
 server compatibility must be tested for the specific setup you choose.
 
+## Speed and token efficiency
+
+The example runner defaults to compact prompts, the latest screenshot, and a
+short history of complete action/result pairs. Its model image is limited to
+1280 pixels on the longest edge. Coordinates are converted back to native pixels
+in code; the full-resolution image remains the source for action validation.
+The native backend also reuses PNG encoding when a fresh capture has exactly the
+same pixels. External MCP clients retain the native image/coordinate contract.
+
+Use `--max-image-edge 0` for native resolution, or an explicit smaller budget for
+a simple, readable interface. On a server supporting the compatible chat-template
+extension, `--reasoning off` requests a direct response for that run only:
+
+```powershell
+.\.venv\Scripts\python.exe -m opencomputer.model_client "YOUR TASK" --model YOUR_MODEL --endpoint http://127.0.0.1:8080/v1 --max-image-edge 640 --reasoning off --metrics-json metrics.json
+```
+
+Reasoning defaults to `auto`, which sends no override. Other servers may reject
+or ignore the extension. Metrics contain timings and server-reported token counts,
+not prompts or screenshots. Missing usage stays unavailable instead of being
+estimated from image size.
+
+In a small local comparison, the explicit 640-pixel/no-reasoning configuration
+used 30% fewer prompt tokens and averaged 42% lower response time. Unchanged-window
+capture was about twice as fast in a separate native benchmark. These are scoped
+measurements, not a general speed guarantee; resizing alone was slower in one
+comparison. See [measurements, configuration, and limitations](docs/performance.md).
+
 ## Development
 
 ```powershell

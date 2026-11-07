@@ -70,6 +70,9 @@ class WindowsBackend:
             raise BackendError("The native backend requires Windows")
         self.cancel_event = threading.Event()
         self._title_cache: dict[tuple[int, int, int], str] = {}
+        self._capture_cache = None
+        self._capture_cache_lock = threading.Lock()
+        self._capture_cache_limit = 32 * 1024 * 1024
         self.user32 = ctypes.WinDLL("user32", use_last_error=True)
         u = self.user32
         u.IsWindow.argtypes = [wintypes.HWND]
@@ -187,18 +190,55 @@ class WindowsBackend:
 
     def capture(self, window_id: str | int) -> dict:
         from PIL import ImageGrab
-        window = self.get_window(window_id)
-        rect = window["rect"]
-        # Capture the HWND's client device context, without including layered
-        # coaching windows. Unsupported DPI mappings fail the dimension check.
-        image = ImageGrab.grab(window=int(window_id))
-        if image.size != (rect["width"], rect["height"]):
-            raise BackendError("Captured dimensions differ from target geometry")
-        if self.get_window(window_id)["rect"] != rect:
-            raise BackendError("Window moved during capture; observe again")
+        try:
+            window = self.get_window(window_id)
+            rect = window["rect"]
+            # Always capture fresh pixels, including on an encoding-cache hit.
+            image = ImageGrab.grab(window=int(window_id))
+            if image.size != (rect["width"], rect["height"]):
+                raise BackendError("Captured dimensions differ from target geometry")
+            after = self.get_window(window_id)
+            if after["rect"] != rect or after.get("pid") != window.get("pid"):
+                raise BackendError("Window identity or geometry changed during capture; observe again")
+            encoded = self._encode_capture(image, window)
+            return {"image_base64": encoded, "mime_type": "image/png", "rect": rect}
+        except Exception:
+            self._clear_capture_cache()
+            raise
+
+    def _clear_capture_cache(self) -> None:
+        with self._capture_cache_lock:
+            self._capture_cache = None
+
+    @staticmethod
+    def _encode_png(image) -> str:
         stream = io.BytesIO()
-        image.save(stream, format="PNG")
-        return {"image_base64": base64.b64encode(stream.getvalue()).decode("ascii"), "mime_type": "image/png", "rect": rect}
+        image.save(stream, format="PNG", compress_level=6)
+        return base64.b64encode(stream.getvalue()).decode("ascii")
+
+    def _encode_capture(self, image, window: dict) -> str:
+        """Reuse encoding only after exact comparison of this fresh frame."""
+        rect = window["rect"]
+        key = (window["id"], window.get("pid"),
+               tuple(rect[field] for field in ("x", "y", "width", "height")), image.mode, image.size)
+        # Native grabs are RGB. Avoid large raw copies and unusual pixel-layout
+        # assumptions when an image cannot fit the bounded cache anyway.
+        raw_size = image.width * image.height * len(image.getbands())
+        with self._capture_cache_lock:
+            if image.mode not in ("RGB", "RGBA", "L") or raw_size > self._capture_cache_limit:
+                self._capture_cache = None
+                return self._encode_png(image)
+            pixels = image.tobytes()
+            cached = self._capture_cache
+            if cached is not None and cached[0] == key and cached[1] == pixels:
+                return cached[2]
+            # The previous frame must not survive a target or pixel change, or
+            # an encoding error. Cache payload includes raw pixels and base64.
+            self._capture_cache = None
+            encoded = self._encode_png(image)
+            if len(pixels) + len(encoded) <= self._capture_cache_limit:
+                self._capture_cache = (key, pixels, encoded)
+            return encoded
 
     def activate(self, window_id: str | int) -> None:
         hwnd = self._handle(window_id)

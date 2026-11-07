@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.2 — 2026-11-07
+
+- Reuse PNG encoding for an exactly matching fresh capture, with a bounded
+  single-frame cache. Every capture still reads the window and validates its
+  identity and geometry.
+- Give the model compact observation metadata and tool descriptions. Keep the
+  task and recent complete action/result pairs instead of accumulating old
+  screenshots and observation metadata.
+- Add a configurable image size budget to the example runner. Convert model
+  coordinates back to native pixels in code; retain the original full-resolution
+  image for the existing action checks.
+- Record model-reported token usage and separate observation, model, and action
+  timing. Add an opt-in comparison benchmark that never dispatches tool calls.
+- Reduce each observation to one authoritative local request while retaining
+  controller identity, arming, cancellation, and fresh-image checks.
+- Add an explicit `--reasoning off` option for servers supporting the compatible
+  chat-template extension. The default leaves server reasoning settings unchanged.
+
 ## 0.1.1 — 2026-11-07
 
 - Add a **Copy MCP config** button with instructions for connecting an agent app.
