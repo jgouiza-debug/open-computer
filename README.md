@@ -1,5 +1,9 @@
 # Open Computer
 
+[![Windows tests](https://github.com/jgouiza-debug/open-computer/actions/workflows/tests.yml/badge.svg)](https://github.com/jgouiza-debug/open-computer/actions/workflows/tests.yml)
+
+[Download a Windows preview](https://github.com/jgouiza-debug/open-computer/releases) · [Ask a question or share feedback](https://github.com/jgouiza-debug/open-computer/discussions)
+
 An independent, MIT-licensed Windows computer-use toolkit for local and
 open-source AI models. A desktop panel lets you choose a window and arm control;
 the model observes screenshots and uses mouse and keyboard tools. A blue outline
@@ -18,7 +22,7 @@ Requires Windows, Python 3.11+ with Tkinter, and Pillow >=12.2,<13 for
 Native fixture validation used Pillow 12.2.0; clean installation also passed
 with Pillow 12.3.0. Pillow 13 is excluded pending validation.
 
-Download and extract this repository, then double-click **install.cmd**. After it
+Download and extract the preview ZIP, then double-click **install.cmd**. After it
 finishes, double-click **start-open-computer.cmd**. Python must already be
 installed and available as `python`.
 
@@ -132,8 +136,15 @@ server compatibility must be tested for the specific setup you choose.
 Tests with fake backends do not move the real mouse. The separately invoked native
 smoke test uses an isolated fixture window. A Windows run has verified screenshot
 capture, a typed test phrase, and its button counter after the user focused that
-fixture. The model runner has been tested with deterministic model-response fixtures; successful
-desktop task completion by a real vision model remains unverified.
+fixture. The model runner also passed a live Windows fixture: an already-loaded
+local vision model typed the exact phrase, clicked the test button once, and
+observed the final counter of 1 across three real model responses. The fixture
+independently checked its actual text and counter, then stopped and disarmed.
+This proves that bounded task through the direct model runner; it does not imply
+general desktop reliability or a complete task through Unsloth's chat UI.
+
+[View the actual fixture result](docs/live-model-result.png).
+
 
 ```powershell
 .\.venv\Scripts\python.exe scripts/native_smoke.py --run --wait-for-focus 60
@@ -143,6 +154,33 @@ Click the disposable test window when it appears. The test then types a known
 phrase, clicks its button, verifies the results, and closes itself. Windows can
 refuse background focus requests, so this explicit local focus step is needed
 in some launch environments.
+
+## Live model fixture
+
+This separate opt-in test uses an already-running local vision/tool model. It
+creates its own disposable window and temporary loopback service; it cannot use
+an existing application's window or the main panel's connection file.
+
+```powershell
+.\.venv\Scripts\python.exe scripts/model_smoke.py --run --wait-for-focus 60 --endpoint http://127.0.0.1:8153/v1 --model YOUR_ALREADY_LOADED_MODEL --max-steps 8
+```
+
+The endpoint must explicitly report `loaded=true` at `/health` and idle slots at
+`/slots`. These readiness routes are required by this test and are not provided
+by every OpenAI-compatible server. It does not download, load, or restart models.
+Click the fixture's empty entry field locally to authorize the test, then keep
+the fixture focused. The model must type `Open Computer model test` and click
+**Test click** once. It receives only the fixture's screenshots and narrowly
+scoped tools. Closing the fixture or Ctrl+Alt+Esc cancels control.
+
+Each run saves its receipt, actual model responses, exact model-visible PNGs,
+observation PNGs with timestamps and hashes, and a final native capture under a
+unique `artifacts/model-smoke/` subdirectory. Artifacts are private and excluded
+from Git. Input events report attempts; the recorded field text and button
+counter independently establish their effects. `passed=true` requires the full
+task and safety checks, so partial typing, a claimed success, or a rejected stale
+action does not constitute a pass. These results establish only that particular
+fixture/model run, not arbitrary desktop reliability.
 
 ## Current boundaries
 

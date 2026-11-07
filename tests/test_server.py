@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import threading
+import sys
 import unittest
 
 from opencomputer.mcp import ClientError, LocalClient
@@ -102,17 +103,35 @@ class ServerTests(unittest.TestCase):
 
     def test_stop_not_queued_behind_an_action(self) -> None:
         errors = []
+        submitted = threading.Event()
+        action_client = LocalClient(self.server.url, self.server.token)
+        stop_client = LocalClient(self.server.url, self.server.token)
+        # Complete an actual HTTP round trip on each independent transport before
+        # measuring concurrency. Thread.start alone is not a readiness barrier.
+        self.assertTrue(action_client.request("GET", "/health")["ok"])
+        self.assertTrue(stop_client.request("GET", "/health")["ok"])
 
         def action() -> None:
+            submitted.set()
             try:
-                self.client.call("type_text", {"observation_id": "fresh", "text": "block until stopped"})
+                action_client.call("type_text", {"observation_id": "fresh", "text": "block until stopped"})
             except Exception as exc:
                 errors.append(exc)
 
         thread = threading.Thread(target=action)
         thread.start()
-        self.assertTrue(self.controller.started.wait(3), repr(errors))
-        self.client.call("stop")
+        self.assertTrue(submitted.wait(1), "Caller thread did not start")
+        if not self.controller.started.wait(3):
+            frame = sys._current_frames().get(thread.ident)
+            stages = []
+            while frame is not None:
+                stages.append(frame.f_code.co_name)
+                frame = frame.f_back
+            self.controller.stop()
+            thread.join(2)
+            self.fail(f"Action was not dispatched after HTTP readiness; errors={errors!r}, caller_stack={stages}")
+        self.assertTrue(thread.is_alive(), "Action must remain blocked when stop is issued")
+        stop_client.call("stop")
         thread.join(2)
         self.assertFalse(thread.is_alive())
         self.assertEqual(errors, [])

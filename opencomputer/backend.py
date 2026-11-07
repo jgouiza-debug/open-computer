@@ -14,6 +14,10 @@ class BackendError(RuntimeError):
     """An input or capture operation could not safely complete."""
 
 
+class BackendCancelled(BackendError):
+    """Local disarm, target selection, or emergency stop cancelled an action."""
+
+
 def rectangle(x: int, y: int, width: int, height: int) -> dict:
     return {"x": x, "y": y, "width": width, "height": height,
             "left": x, "top": y, "right": x + width, "bottom": y + height}
@@ -51,7 +55,7 @@ class FakeBackend:
 
     def perform(self, action: str, window_id: str | int, **params: object) -> None:
         if self.cancel_event.is_set():
-            raise BackendError("Stopped")
+            raise BackendCancelled("Action cancelled locally")
         self.get_window(window_id)
         self.actions.append((action, window_id, params))
 
@@ -65,6 +69,7 @@ class WindowsBackend:
         if os.name != "nt":
             raise BackendError("The native backend requires Windows")
         self.cancel_event = threading.Event()
+        self._title_cache: dict[tuple[int, int, int], str] = {}
         self.user32 = ctypes.WinDLL("user32", use_last_error=True)
         u = self.user32
         u.IsWindow.argtypes = [wintypes.HWND]
@@ -84,6 +89,7 @@ class WindowsBackend:
         u.GetAsyncKeyState.argtypes = [ctypes.c_int]
         u.GetAsyncKeyState.restype = ctypes.c_short
         u.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        u.GetWindowThreadProcessId.restype = wintypes.DWORD
         try:
             u.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
             u.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
@@ -140,12 +146,25 @@ class WindowsBackend:
         width, height = corner.x - origin.x, corner.y - origin.y
         if width <= 0 or height <= 0:
             raise BackendError("Target window has no visible area")
+        pid = wintypes.DWORD()
+        window_thread = self.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if not window_thread or not pid.value:
+            raise BackendError("Cannot read target process identity")
+        title = self._window_title(hwnd, pid.value, window_thread)
+        return {"id": str(hwnd), "pid": pid.value, "title": title,
+                "rect": rectangle(origin.x, origin.y, width, height)}
+
+    def _window_title(self, hwnd: int, pid: int, window_thread: int) -> str:
+        key = (hwnd, pid, window_thread)
+        if pid == os.getpid() and window_thread != threading.get_native_id():
+            # GetWindowText sends WM_GETTEXT synchronously for same-process
+            # windows. A worker holding the controller lock must never wait on
+            # the UI thread, which may itself be polling that controller.
+            return self._title_cache.get(key, f"Window {hwnd}")
         title = ctypes.create_unicode_buffer(self.user32.GetWindowTextLengthW(hwnd) + 1)
         self.user32.GetWindowTextW(hwnd, title, len(title))
-        pid = wintypes.DWORD()
-        self.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        return {"id": str(hwnd), "pid": pid.value, "title": title.value,
-                "rect": rectangle(origin.x, origin.y, width, height)}
+        self._title_cache[key] = title.value
+        return title.value
 
     def list_windows(self) -> list[dict]:
         windows = []
@@ -186,14 +205,14 @@ class WindowsBackend:
         if getattr(self, "_expected_pid", None) is not None and self.get_window(window_id).get("pid") != self._expected_pid:
             raise BackendError("Target process identity changed")
         if self.cancel_event.is_set():
-            raise BackendError("Stopped")
+            raise BackendCancelled("Action cancelled locally")
         self.user32.SetForegroundWindow(hwnd)
         if self.user32.GetForegroundWindow() != hwnd:
             raise BackendError("Windows refused to focus the target; focus it manually")
 
     def _check(self, window_id, rect, point=None):
         if self.cancel_event.is_set():
-            raise BackendError("Stopped")
+            raise BackendCancelled("Action cancelled locally")
         hwnd = self._handle(window_id)
         window = self.get_window(window_id)
         if window.get("pid") != self._expected_pid:
@@ -249,6 +268,8 @@ class WindowsBackend:
         self._expected_pid = params.pop("_expected_pid", None)
         rect = params.pop("_expected_rect", self.get_window(window_id)["rect"])
         if action == "activate":
+            if self.get_window(window_id)["rect"] != rect:
+                raise BackendError("Target geometry changed; observe again")
             self.activate(window_id)
             self._check(window_id, rect)
             return
@@ -280,13 +301,14 @@ class WindowsBackend:
                 self._held.discard(vk)
 
     def _drag(self, window_id, rect, params):
+        self._check(window_id, rect, (rect["x"] + params["x"], rect["y"] + params["y"]))
         self._held.add(1)
         try:
             self._send(self._mouse(2))
             steps = max(2, round(params.get("duration", 0.4) * 60))
             for step in range(1, steps + 1):
                 if self.cancel_event.wait(params.get("duration", 0.4) / steps):
-                    raise BackendError("Stopped")
+                    raise BackendCancelled("Action cancelled locally")
                 x = round(params["x"] + (params["to_x"] - params["x"]) * step / steps)
                 y = round(params["y"] + (params["to_y"] - params["y"]) * step / steps)
                 self._move(window_id, rect, x, y)
@@ -295,28 +317,36 @@ class WindowsBackend:
             self._held.discard(1)
 
     def _type_text(self, window_id, rect, text):
-        encoded = text.encode("utf-16-le")
-        for offset in range(0, len(encoded), 2):
+        for character in text:
             self._check(window_id, rect)
-            unit = int.from_bytes(encoded[offset:offset + 2], "little")
+            encoded = character.encode("utf-16-le")
+            units = [int.from_bytes(encoded[offset:offset + 2], "little")
+                     for offset in range(0, len(encoded), 2)]
+            # SendInput inserts one call's events without input interleaving.
+            # Keep a supplementary character's surrogate pair together so a
+            # local cancellation cannot leave only its high surrogate typed.
+            inputs = [event for unit in units for event in
+                      (self._keyboard(scan=unit, flags=4), self._keyboard(scan=unit, flags=6))]
             try:
-                self._send(self._keyboard(scan=unit, flags=4))
-            finally:
-                self._send(self._keyboard(scan=unit, flags=6))
+                self._send(*inputs)
+            except Exception:
+                self._send(*(self._keyboard(scan=unit, flags=6) for unit in units))
+                raise
 
     def _press_key(self, window_id, rect, key):
         keys = parse_key(key)
+        extended = {33, 34, 35, 36, 37, 38, 39, 40, 45, 46}
         try:
             for vk in keys:
                 self._check(window_id, rect)
                 self._held.add(vk)
-                self._send(self._keyboard(vk=vk))
+                self._send(self._keyboard(vk=vk, flags=1 if vk in extended else 0))
         finally:
             release_error = None
             for vk in reversed(keys):
                 if vk in self._held:
                     try:
-                        self._send(self._keyboard(vk=vk, flags=2))
+                        self._send(self._keyboard(vk=vk, flags=2 | (1 if vk in extended else 0)))
                     except BackendError as exc:
                         release_error = exc
                     finally:

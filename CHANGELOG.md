@@ -1,0 +1,30 @@
+# Changelog
+
+## 0.1.1 — 2026-11-07
+
+- Add a **Copy MCP config** button with instructions for connecting an agent app.
+  Configuration uses the console Python interpreter, including when the panel
+  was launched through `pythonw.exe`.
+- Fix same-process window inspection that could deadlock a desktop test while
+  the UI thread and HTTP worker waited on each other.
+- Improve emergency-stop handling, navigation keys, emoji input, and cancelled
+  drags. Reject malformed Unicode before sending any text.
+- Require well-formed, single tool calls in the example model runner. Pin control
+  authority, retain only the latest screenshot, and interrupt cancelled model
+  requests promptly.
+- Preserve the short observation lifetime for desktop input. A slow model's
+  action can receive a fresh receipt only when a new screenshot and target
+  identity exactly match its original observation.
+- Wait for three matching captures before planning, so queued typing has time
+  to appear. Reject windows that keep changing instead of acting on a transient
+  frame. Pin controller instance identity to detect restarts as well as rearming.
+- Add a disposable live-model test that checks actual typed text and button
+  clicks and saves separate model, native-input, and final-state evidence.
+- Harden MCP request validation and make HTTP concurrency tests deterministic.
+
+## 0.1.0 — 2026-11-07
+
+- Initial Windows preview: local desktop panel, visible control overlay,
+  screenshots and input tools, authenticated local service, and MCP bridge.
+- Add a source installer, connection configuration helper, diagnostics,
+  independent computer-use skill, and Windows CI.

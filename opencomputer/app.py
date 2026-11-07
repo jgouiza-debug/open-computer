@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import ctypes
 from datetime import datetime
+import json
+from pathlib import Path
 import queue
 import sys
 import threading
@@ -21,6 +23,17 @@ TEXT = "#ecf2fc"
 MUTED = "#94a3ba"
 GREEN = "#67dfb1"
 RED = "#ff7185"
+
+
+def panel_mcp_config(python_executable: str | Path | None = None,
+                     package_root: str | Path | None = None) -> str:
+    """Build credential-free wiring; stdio must use python.exe, never pythonw."""
+    from .setup import build_mcp_config
+
+    executable = Path(python_executable or sys.executable)
+    if executable.name.casefold() == "pythonw.exe":
+        executable = executable.with_name("python.exe")
+    return json.dumps(build_mcp_config(executable, package_root), indent=2)
 
 
 def event_description(event: dict[str, Any]) -> str:
@@ -184,14 +197,22 @@ class OpenComputerApp:
         connection_card = tk.Frame(main, bg=PANEL, padx=22, pady=18)
         connection_card.pack(fill="x", pady=(14, 14))
         self.connection = tk.StringVar(value="STARTING LOCAL SERVER")
-        tk.Label(connection_card, textvariable=self.connection, bg=PANEL, fg=GREEN,
+        connection_row = tk.Frame(connection_card, bg=PANEL)
+        connection_row.pack(fill="x")
+        tk.Label(connection_row, textvariable=self.connection, bg=PANEL, fg=GREEN,
                  font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        self.copy_config_button = self._button(connection_card, "Copy MCP config", self._copy_mcp_config)
+        self.copy_config_button.pack(anchor="w", pady=(12, 0))
         self.endpoint = tk.StringVar(value="Connecting…")
         tk.Label(connection_card, textvariable=self.endpoint, bg=PANEL, fg=TEXT,
                  font=("Consolas", 11)).pack(anchor="w", pady=(9, 4))
         self.connection_file = tk.StringVar(value="")
         tk.Label(connection_card, textvariable=self.connection_file, bg=PANEL, fg=MUTED,
                  font=("Segoe UI", 9), wraplength=600, justify="left").pack(anchor="w")
+        tk.Label(connection_card,
+                 text="Paste into your client's MCP settings; keep this panel running.",
+                 bg=PANEL, fg=MUTED, font=("Segoe UI", 9), wraplength=440,
+                 justify="left").pack(anchor="w", pady=(7, 0))
         log_card = tk.Frame(main, bg=PANEL, padx=22, pady=18)
         log_card.pack(fill="both", expand=True)
         tk.Label(log_card, text="Activity", bg=PANEL, fg=TEXT,
@@ -226,6 +247,18 @@ class OpenComputerApp:
         except Exception as exc:
             self._log(str(exc), "error")
             return None
+
+    def _copy_mcp_config(self) -> None:
+        # Clipboard access is deliberately confined to this explicit button action.
+        try:
+            config = panel_mcp_config()
+            self.root.clipboard_clear()
+            self.root.clipboard_append(config)
+            self.copy_config_button.configure(text="Copied ✓")
+            self._log("MCP config copied. Paste it into your client's MCP settings.")
+            self.root.after(2000, lambda: self.copy_config_button.configure(text="Copy MCP config"))
+        except Exception as exc:
+            self._log(f"Could not copy MCP config: {exc}", "error")
 
     def refresh_windows(self) -> None:
         windows = self._call(self.controller.list_windows)

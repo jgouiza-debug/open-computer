@@ -16,11 +16,13 @@ user can already read it and is outside this boundary.
 
 `get_window_state` captures the selected window's client area as PNG and creates one observation
 receipt. Screenshot coordinates start at that client area's top-left screen position,
-excluding the native title bar and resize frame. Each action consumes that receipt. The next action requires another
-capture. Receipts bind window identity, geometry and age; the backend checks
+excluding the native title bar and resize frame. Each action consumes that receipt.
+The next action requires another capture. Receipts bind window identity, geometry,
+age and local authorization generation; the backend checks
 foreground focus and visible pointer ownership before native input. Target
 selection disarms input. Emergency stop cancels in-progress work, invalidates
-receipts and requires local reset and arming. Physical modifier/button presses
+receipts and requires local reset and arming. A controller instance UUID distinguishes
+replacement services even if their generation counters happen to match. Physical modifier/button presses
 cause rejection rather than changing the meaning of agent input.
 
 The MCP stdio bridge uses newline-delimited JSON-RPC and proxies only the documented
@@ -29,13 +31,35 @@ observation metadata in a separate text block. Stdout contains protocol messages
 only. Open-source agents can use the bridge without any proprietary desktop
 automation service.
 
+For windows owned by this process, worker threads use a cached caption instead of
+synchronous text messages to the GUI thread. This avoids a lock inversion between
+controller status polling and Tk's message loop. PID, geometry, foreground and
+input checks continue to read native state.
+
 The optional model runner calls an already running local OpenAI-compatible
 `/v1/chat/completions` endpoint. It supplies image observations and tool schemas,
 accepts one action per model response, refreshes afterward, and stops after a
-bounded number of steps. It cannot select or arm a target and always stops on
-completion or failure. No model is downloaded, loaded, or restarted. Actual model
-quality and provider compatibility require testing with a running vision/tool
-model; fixture tests alone do not establish those properties.
+bounded number of steps. Before planning, it requires three identical observed
+frames at 100 ms intervals, with a two-second observation deadline. This establishes
+observed quiescence rather than assuming that queued native input has already
+painted. Only the latest screenshot stays in model context.
+
+After the model responds, its original observation ID must match. The runner then
+captures again and replaces the action receipt only if the exact PNG, MIME type,
+HWND, PID, geometry, authorization generation and controller instance still match.
+A changed frame rejects the action; it is never replayed automatically. The
+controller's 15-second receipt lifetime remains in effect for the fresh receipt.
+Stop/rearm and service replacement cancel the old run's authority.
+
+The runner cannot select or arm a target and always attempts stop on completion
+or failure. Transport cancellation interrupts a pending response; malformed or
+truncated replies, empty responses, and multiple or unadvertised tool calls fail before input. No model
+is downloaded, loaded, or restarted. A real local vision model completed one
+disposable fixture task through the direct model endpoint in November 2026: the
+actual text field and button counter verified typing and one click across three
+model responses. This is scoped fixture evidence, not arbitrary-application
+coverage or full Unsloth chat-loop validation. Provider compatibility and task
+quality still require testing for each chosen setup.
 
 Windows input is best-effort: Windows can reject focus changes or input to elevated
 applications, protected surfaces may not capture, and secure desktop/UAC surfaces

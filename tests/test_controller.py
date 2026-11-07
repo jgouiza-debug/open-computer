@@ -1,9 +1,11 @@
+import os
+import sys
 import threading
 import time
 from types import SimpleNamespace
 import unittest
 
-from opencomputer.backend import BackendError, FakeBackend, WindowsBackend, parse_key
+from opencomputer.backend import BackendCancelled, BackendError, FakeBackend, WindowsBackend, parse_key
 from opencomputer.controller import Controller, ControllerError
 
 
@@ -27,6 +29,7 @@ class ControllerTests(unittest.TestCase):
         observation = self.controller.get_window_state()["observation_id"]
         self.error("not_armed", lambda: self.controller.execute("click", observation, x=5, y=5))
         self.controller.arm()
+        observation = self.controller.get_window_state()["observation_id"]
         self.controller.execute("click", observation, x=5, y=5)
         self.error("stale_observation", lambda: self.controller.execute("click", observation, x=5, y=5))
         self.assertEqual(len(self.backend.actions), 1)
@@ -37,6 +40,42 @@ class ControllerTests(unittest.TestCase):
         second = self.controller.get_window_state()["observation_id"]
         self.error("stale_observation", lambda: self.controller.execute("activate", first))
         self.controller.execute("activate", second)
+
+    def test_local_authority_generation_changes_on_every_control_transition(self):
+        generation = self.controller.status()["control_generation"]
+        for operation in (self.controller.arm, self.controller.disarm,
+                          self.controller.reset_stop, self.controller.arm,
+                          self.controller.stop, self.controller.reset_stop):
+            state = operation()
+            self.assertGreater(state["control_generation"], generation)
+            generation = state["control_generation"]
+        self.controller.select_window("demo")
+        self.assertGreater(self.controller.status()["control_generation"], generation)
+        state = self.controller.get_window_state()
+        self.assertEqual(state["control_generation"], self.controller.status()["control_generation"])
+
+    def test_arm_invalidates_observation_from_previous_authority(self):
+        observation = self.controller.get_window_state()["observation_id"]
+        self.controller.arm()
+        self.error("stale_observation", lambda: self.controller.execute("activate", observation))
+
+    def test_instance_id_matches_capture_and_survives_control_transitions(self):
+        instance_id = self.controller.status()["controller_instance_id"]
+        self.assertRegex(instance_id, r"^[0-9a-f]{32}$")
+        self.assertEqual(self.controller.get_window_state()["controller_instance_id"], instance_id)
+        self.controller.arm()
+        self.controller.stop()
+        self.controller.reset_stop()
+        self.assertEqual(self.controller.status()["controller_instance_id"], instance_id)
+
+    def test_new_controller_instance_cannot_reuse_previous_authority_epoch(self):
+        previous = self.controller.status()
+        replacement = Controller(FakeBackend())
+        replacement.select_window("demo")
+        current = replacement.status()
+        self.assertEqual(current["selected_window"], previous["selected_window"])
+        self.assertEqual(current["control_generation"], previous["control_generation"])
+        self.assertNotEqual(current["controller_instance_id"], previous["controller_instance_id"])
 
     def test_expired_observation(self):
         self.controller.observation_max_age = -1
@@ -69,6 +108,11 @@ class ControllerTests(unittest.TestCase):
         self.error("invalid_arguments", lambda: self.controller.execute("drag", observation, x=1, y=1, to_x=3, to_y=3, duration=float("nan")))
         self.assertEqual(parse_key("Ctrl+Shift+A"), [17, 16, 65])
 
+    def test_invalid_unicode_rejected_before_any_input(self):
+        observation = self.observe_arm()
+        self.error("invalid_arguments", lambda: self.controller.execute("type_text", observation, text="prefix\ud800"))
+        self.assertFalse(self.backend.actions)
+
     def test_selection_disarms_and_cannot_reset_emergency_stop(self):
         self.observe_arm()
         self.controller.stop()
@@ -87,6 +131,74 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse(self.controller.status()["stopped"])
         self.controller.arm()
         self.assertTrue(self.controller.status()["armed"])
+
+    def test_disarmed_action_reports_not_armed_without_emergency_reset(self):
+        observation = self.observe_arm()
+        self.controller.disarm()
+        self.error("not_armed", lambda: self.controller.execute("activate", observation))
+
+    def test_disarm_during_action_preserves_ordinary_disarm(self):
+        entered = threading.Event()
+        errors = []
+
+        def blocking(action, window_id, **params):
+            entered.set()
+            self.backend.cancel_event.wait(2)
+            FakeBackend.perform(self.backend, action, window_id, **params)
+
+        self.backend.perform = blocking
+        observation = self.observe_arm()
+
+        def run():
+            try:
+                self.controller.execute("activate", observation)
+            except ControllerError as exc:
+                errors.append(exc.code)
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        self.assertTrue(entered.wait(1))
+        self.controller.disarm()
+        thread.join(1)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, ["cancelled"])
+        self.assertFalse(self.controller.status()["stopped"])
+        self.controller.arm()
+        self.assertTrue(self.controller.status()["armed"])
+
+    def test_selection_and_stop_cancel_without_rearming_old_action(self):
+        for local_change in (self.controller.select_window, self.controller.stop):
+            with self.subTest(change=local_change.__name__):
+                self.controller.reset_stop()
+                entered = threading.Event()
+                errors = []
+
+                def blocking(action, window_id, **params):
+                    entered.set()
+                    self.backend.cancel_event.wait(2)
+                    FakeBackend.perform(self.backend, action, window_id, **params)
+
+                def run():
+                    try:
+                        self.controller.execute("activate", observation)
+                    except ControllerError as exc:
+                        errors.append(exc.code)
+
+                self.backend.perform = blocking
+                observation = self.observe_arm()
+                thread = threading.Thread(target=run)
+                thread.start()
+                self.assertTrue(entered.wait(1))
+                if local_change.__name__ == "select_window":
+                    local_change("demo")
+                else:
+                    local_change()
+                thread.join(1)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(errors, ["cancelled"])
+                self.assertFalse(self.controller.status()["armed"])
+                self.assertEqual(self.controller.status()["stopped"], local_change.__name__ == "stop")
+                self.assertFalse(self.backend.actions)
 
     def test_stop_interrupts_running_action_without_waiting_for_lock(self):
         entered = threading.Event()
@@ -140,6 +252,7 @@ class BackendSafetyTests(unittest.TestCase):
     def setUp(self):
         self.backend = WindowsBackend.__new__(WindowsBackend)
         self.backend.cancel_event = threading.Event()
+        self.backend._title_cache = {}
         self.backend.user32 = SimpleNamespace(SendInput=lambda *args: 0)
         self.backend._create_input_types()
         self.window = {"id": "1", "pid": 42, "rect": FakeBackend().window["rect"]}
@@ -178,10 +291,62 @@ class BackendSafetyTests(unittest.TestCase):
             self.backend.perform("drag", "1", x=1, y=1, to_x=10, to_y=10, duration=0.1)
         self.assertEqual(self.calls, [2, 4])
 
+    def test_navigation_keys_include_extended_flag_on_down_and_up(self):
+        self.backend._send = lambda item: self.calls.append((item.ki.wVk, item.ki.dwFlags))
+        self.backend.perform("press_key", "1", key="Ctrl+Home")
+        self.assertEqual(self.calls, [(17, 0), (36, 1), (36, 3), (17, 2)])
+
+    def test_unicode_surrogates_remain_together_when_cancelled(self):
+        def check(*args):
+            if self.backend.cancel_event.is_set():
+                raise BackendError("Stopped")
+
+        def send(*items):
+            self.calls.append([(item.ki.wScan, item.ki.dwFlags) for item in items])
+            self.backend.cancel_event.set()
+
+        self.backend._check = check
+        self.backend._send = send
+        with self.assertRaises(BackendError):
+            self.backend.perform("type_text", "1", text="\U0001f680x")
+        self.assertEqual(self.calls, [[(0xD83D, 4), (0xD83D, 6), (0xDE80, 4), (0xDE80, 6)]])
+
+    def test_partial_unicode_injection_releases_all_code_units(self):
+        def send(*items):
+            self.calls.append([(item.ki.wScan, item.ki.dwFlags) for item in items])
+            if len(self.calls) == 1:
+                raise BackendError("Partial input")
+
+        self.backend._send = send
+        with self.assertRaises(BackendError):
+            self.backend.perform("type_text", "1", text="\U0001f680")
+        self.assertEqual(self.calls[-1], [(0xD83D, 6), (0xDE80, 6)])
+
     def test_ordinary_action_does_not_implicitly_activate(self):
         self.backend.activate = lambda _: self.fail("Ordinary action must not activate")
         self.backend._send = lambda *args: None
         self.backend.perform("move", "1", x=1, y=1)
+
+    def test_activation_rejects_geometry_change_before_focusing(self):
+        self.backend.activate = lambda _: self.calls.append("activated")
+        previous = {**self.window["rect"], "x": 99}
+        with self.assertRaisesRegex(BackendError, "geometry"):
+            self.backend.perform("activate", "1", _expected_rect=previous, _expected_pid=42)
+        self.assertEqual(self.calls, [])
+
+    def test_drag_rechecks_cancellation_after_initial_pointer_move(self):
+        def check(*args):
+            if self.backend.cancel_event.is_set():
+                raise BackendCancelled("Cancelled")
+        def move(*args):
+            self.backend.cancel_event.set()
+            return (101, 101)
+        self.backend._check = check
+        self.backend._move = move
+        self.backend._send = lambda *items: self.calls.extend(items)
+        with self.assertRaises(BackendCancelled):
+            self.backend.perform("drag", "1", x=1, y=1, to_x=5, to_y=5)
+        self.assertEqual(self.calls, [])
 
     def test_native_focus_pid_and_occlusion_guards(self):
         self.backend._handle = lambda _: 1
@@ -201,6 +366,76 @@ class BackendSafetyTests(unittest.TestCase):
         self.backend._expected_pid = 43
         with self.assertRaisesRegex(BackendError, "identity"):
             check()
+
+    def test_own_foreign_thread_caption_never_calls_synchronous_text_apis(self):
+        def forbidden(*args):
+            self.fail("Same-process cross-thread caption must not send synchronous messages")
+        self.backend.user32.GetWindowTextLengthW = forbidden
+        self.backend.user32.GetWindowTextW = forbidden
+        other_thread = threading.get_native_id() + 1
+        self.assertEqual(self.backend._window_title(123, os.getpid(), other_thread), "Window 123")
+        self.backend._title_cache[(123, os.getpid(), other_thread)] = "Cached fixture"
+        self.assertEqual(self.backend._window_title(123, os.getpid(), other_thread), "Cached fixture")
+
+
+@unittest.skipUnless(sys.platform == "win32", "Windows caption/controller lock regression")
+class OwnWindowCaptionTests(unittest.TestCase):
+    def test_worker_status_releases_lock_without_tk_message_pumping(self):
+        import tkinter as tk
+        try:
+            root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest(f"Tk is unavailable: {exc}")
+        root.withdraw()  # No visible window, focus change, screenshot, or input.
+        root.title("Open Computer read-only caption regression")
+        root.geometry("200x100")
+        root.update_idletasks()
+        backend = WindowsBackend()
+        hwnd = backend.user32.GetAncestor(root.winfo_id(), 2)
+        # Only visibility is bypassed for this intentionally hidden fixture.
+        # The real PID/client geometry/title metadata paths remain under test.
+        backend._handle = lambda _window_id: hwnd
+        controller = Controller(backend)
+        controller.select_window(str(hwnd))
+        backend._title_cache.clear()  # Exercise fallback, not just warm cache.
+        entered = threading.Event()
+        original_get_window = backend.get_window
+        main_thread = threading.get_native_id()
+        errors = []
+
+        def get_window(window_id):
+            if threading.get_native_id() != main_thread:
+                entered.set()
+            return original_get_window(window_id)
+        backend.get_window = get_window
+
+        def poll():
+            try:
+                controller.status()
+            except Exception as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=poll, daemon=True)
+        thread.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            # Old code synchronously waited for WM_GETTEXT while owning this
+            # lock; the UI's next status poll could then never return.
+            acquired = controller._lock.acquire(timeout=0.5)
+            if acquired:
+                controller._lock.release()
+            self.assertTrue(acquired, "Worker held the controller lock waiting for Tk")
+            thread.join(0.5)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(controller.status()["selected_window"]["pid"], os.getpid())
+        finally:
+            deadline = time.monotonic() + 1
+            while thread.is_alive() and time.monotonic() < deadline:
+                root.update()
+                time.sleep(0.01)
+            root.destroy()
+            thread.join(0.5)
 
 
 if __name__ == "__main__":

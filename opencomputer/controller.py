@@ -8,7 +8,7 @@ import time
 import uuid
 from typing import Callable
 
-from .backend import BackendError, FakeBackend, WindowsBackend, parse_key
+from .backend import BackendCancelled, BackendError, FakeBackend, WindowsBackend, parse_key
 
 
 class ControllerError(RuntimeError):
@@ -33,6 +33,7 @@ class Controller:
         self._stopped = False
         self._observation = None
         self._generation = 0
+        self._instance_id = uuid.uuid4().hex
 
     def _emit(self, event, **details):
         if self.event_sink:
@@ -43,6 +44,7 @@ class Controller:
                 # A display failure cannot leave desktop input armed.
                 self._armed = False
                 self._stopped = True
+                self._generation += 1
                 self._cancel.set()
                 self._observation = None
                 raise ControllerError("overlay_error", "Overlay event delivery failed; control stopped")
@@ -81,6 +83,8 @@ class Controller:
                     selected = self._selected
             return {"selected_window": selected, "armed": self._armed,
                     "stopped": self._stopped,
+                    "control_generation": self._generation,
+                    "controller_instance_id": self._instance_id,
                     "observation_id": self._observation["id"] if self._observation else None,
                     "backend": "windows" if self.backend.real else "demo"}
 
@@ -109,7 +113,9 @@ class Controller:
                 self._fail("stopped", "Reset the emergency stop locally before arming")
             window = self._window()
             self._cancel.clear()
+            self._generation += 1
             self._armed = True
+            self._observation = None
             self._emit("armed", selected_window=window)
             return self.status()
 
@@ -140,6 +146,7 @@ class Controller:
         with self._operation_lock, self._lock:
             self._stopped = False
             self._cancel.clear()
+            self._generation += 1
             self._armed = False
             self._observation = None
             self._emit("disarmed", selected_window=self._selected)
@@ -161,7 +168,9 @@ class Controller:
                 observation_id = uuid.uuid4().hex
                 self._observation = {"id": observation_id, "window": window,
                                      "created": time.monotonic(), "generation": generation}
-                return {**capture, "window": window, "observation_id": observation_id, "armed": self._armed}
+                return {**capture, "window": window, "observation_id": observation_id,
+                        "armed": self._armed, "control_generation": generation,
+                        "controller_instance_id": self._instance_id}
 
     def _validate(self, action, params, rect):
         allowed = {
@@ -189,6 +198,11 @@ class Controller:
                 self._fail("invalid_arguments", "Drag duration must be between 0.05 and 3 seconds")
         if action == "type_text" and (not isinstance(params.get("text"), str) or len(params["text"]) > 10000):
             self._fail("invalid_arguments", "Text must contain at most 10000 characters")
+        if action == "type_text":
+            try:
+                params["text"].encode("utf-16-le")
+            except UnicodeEncodeError:
+                self._fail("invalid_arguments", "Text must contain valid Unicode characters")
         if action == "press_key":
             try:
                 parse_key(params.get("key"))
@@ -198,10 +212,12 @@ class Controller:
     def execute(self, action: str, observation_id: str, **params: object) -> dict:
         with self._operation_lock:
             with self._lock:
-                if self._cancel.is_set():
+                if self._stopped:
                     self._fail("stopped", "Control is stopped; reset and arm locally")
                 if not self._armed:
                     self._fail("not_armed", "Arm control from the local desktop panel first")
+                if self._cancel.is_set():
+                    self._fail("cancelled", "Action cancelled by a local control change")
                 observation = self._observation
                 if observation is None or not isinstance(observation_id, str) or observation["id"] != observation_id:
                     self._fail("stale_observation", "Obtain a fresh observation before each action")
@@ -219,10 +235,18 @@ class Controller:
             try:
                 self.backend.perform(action, window["id"], _expected_rect=window["rect"],
                                      _expected_pid=window.get("pid"), **params)
+            except BackendCancelled as exc:
+                with self._lock:
+                    self._armed = False
+                    self._observation = None
+                    self._generation += 1
+                    self._emit("cancelled", message=str(exc), **event)
+                self._fail("cancelled", str(exc))
             except Exception as exc:
                 with self._lock:
                     self._armed = False
                     self._stopped = True
+                    self._generation += 1
                     self._cancel.set()
                     self._emit("error", message=str(exc), **event)
                 self._fail("input_rejected", str(exc))
