@@ -251,6 +251,17 @@ def module_summary(paths: set[Path], bundle: Path) -> dict:
             'outside_tcl_tk_dlls': outside_tcl_tk, 'pure_python_module_origins': 'not measured'}
 
 
+def verify_gui_native_modules(paths: list[str]) -> None:
+    """Recognize the CPython Windows Tcl/Tk 8.6 and 9.0 DLL pairs."""
+    modules = {Path(path).name.casefold() for path in paths}
+    # Tk 9's Windows library includes the Tcl ABI prefix: tcl9tk90.dll.
+    supported_pairs = ({'tcl86t.dll', 'tk86t.dll'}, {'tcl90.dll', 'tcl9tk90.dll'})
+    if not any(pair.issubset(modules) for pair in supported_pairs):
+        raise SmokeError('Bundled Tcl/Tk DLL provenance was not observed')
+    if not any(name.startswith('_tkinter') and name.endswith('.pyd') for name in modules):
+        raise SmokeError('Bundled Tkinter native extension provenance was not observed')
+
+
 def owned_process(command: list[str], cwd: Path, environment: dict[str, str], output: Path,
                   bundle: Path, *, gui: bool = False, timeout: float = 30) -> dict:
     output.mkdir(parents=True, exist_ok=False)
@@ -396,12 +407,7 @@ def run(bundle: Path, output: Path, *, include_gui: bool = False) -> dict:
         if include_gui:
             result['checks']['gui'] = owned_process([str(gui), '--demo', '--no-server', '--smoke-test'],
                 cwd, environment, output / 'gui', relocated, gui=True)
-            modules = [Path(path).name.casefold() for path in result['checks']['gui']['bundle_native_modules']]
-            if not all(any(name.startswith(prefix) and name.endswith('.dll') for name in modules)
-                       for prefix in ('tk', 'tcl')):
-                raise SmokeError('Bundled Tcl/Tk DLL provenance was not observed')
-            if not any(name.startswith('_tkinter') and name.endswith('.pyd') for name in modules):
-                raise SmokeError('Bundled Tkinter native extension provenance was not observed')
+            verify_gui_native_modules(result['checks']['gui']['bundle_native_modules'])
             result['gui_initialization_and_self_exit'] = True
         else:
             result['gui_initialization_and_self_exit'] = 'not requested'
