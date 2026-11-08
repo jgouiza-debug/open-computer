@@ -77,12 +77,17 @@ observation receipts. They must not be replayed against another snapshot.
 
 The structural cache may request control type, bounds, enabled/focusable state,
 and IsPassword. It must not prefetch Name, ValuePattern value, or TextPattern
-text before deciding whether text collection is permitted. Only an explicitly
-false password property permits name/value collection. True or unknown emits
-neither name nor value and skips that node's descendants. TextPattern/document
-scraping is outside v1. Nonpassword ValuePattern values are optional; unsupported
-properties are omitted, not invented. A denied property must not silently
-become a false password flag.
+text before deciding whether text collection is permitted. The reader requests
+[UIA's documented framework defaults](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-automation-element-propids)
+for IsOffscreen, IsEnabled, IsKeyboardFocusable, and IsPassword. A provider that
+does not implement IsPassword may therefore yield UIA's default `FALSE`; the
+reader does not invent a fallback value. All three password checks must return
+a successful `VT_BOOL` false before name/value text is emitted. True or unknown
+(a failed HRESULT or invalid variant type) emits neither name nor value and
+skips that node's descendants; observed changes between checks also redact text.
+This follows the compliant-UIA-provider contract and is not a security guarantee
+against a broken or malicious provider. TextPattern/document scraping is outside
+v1. Nonpassword ValuePattern values are optional; unsupported values are omitted.
 
 Fixed limits are 256 nodes, depth 12, names 160 characters, values 256 characters,
 and 8,192 collected name/value characters per result. A 1,500 ms traversal

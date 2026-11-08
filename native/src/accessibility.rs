@@ -132,24 +132,35 @@ fn decode_bool(value: &VARIANT) -> (Option<bool>, u16) {
     }
 }
 fn ignore_default_value(property: UIA_PROPERTY_ID) -> bool {
-    // UIA supplies documented framework defaults for these nonprivacy properties.
+    // UIA documents FALSE as the framework default for these four booleans.
     // https://learn.microsoft.com/windows/win32/winauto/uiauto-automation-element-propids
-    // Password and every unreviewed property always require an explicit value.
+    // IsPassword uses that API trust contract, not a client-invented false.
+    // This assumes a compliant UIA provider, not a security boundary against a
+    // broken/malicious provider. Errors and invalid types remain unknown.
     ![
         UIA_IsOffscreenPropertyId,
         UIA_IsEnabledPropertyId,
         UIA_IsKeyboardFocusablePropertyId,
+        UIA_IsPasswordPropertyId,
     ]
     .contains(&property)
+}
+fn decoded_bool_result(
+    result: windows::core::Result<VARIANT>,
+) -> windows::core::Result<Option<bool>> {
+    let value = Variant(result?);
+    Ok(decode_bool(&value.0).0)
 }
 fn cached_bool_detail(
     element: &IUIAutomationElement,
     property: UIA_PROPERTY_ID,
 ) -> windows::core::Result<Option<bool>> {
-    // The password path suppresses defaults: unknown never authorizes text reads.
+    // Every password gate uses the same framework-default policy. A TRUE still
+    // redacts/prunes, while a failed call or nonboolean never authorizes text.
     unsafe {
-        let value = Variant(element.GetCachedPropertyValueEx(property, true)?);
-        Ok(decode_bool(&value.0).0)
+        decoded_bool_result(
+            element.GetCachedPropertyValueEx(property, ignore_default_value(property)),
+        )
     }
 }
 fn cached_bool(element: &IUIAutomationElement, property: UIA_PROPERTY_ID) -> Option<bool> {
@@ -543,16 +554,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_reviewed_nonprivacy_bools_accept_framework_defaults() {
+    fn only_reviewed_bools_accept_framework_defaults() {
         for property in [
             UIA_IsOffscreenPropertyId,
             UIA_IsEnabledPropertyId,
             UIA_IsKeyboardFocusablePropertyId,
+            UIA_IsPasswordPropertyId,
         ] {
             assert!(!ignore_default_value(property));
         }
-        assert!(ignore_default_value(UIA_IsPasswordPropertyId));
         assert!(ignore_default_value(UIA_HasKeyboardFocusPropertyId));
+    }
+
+    #[test]
+    fn password_defaults_never_convert_errors_or_invalid_types_to_false() {
+        assert_eq!(
+            decoded_bool_result(Ok(VARIANT::from(false))).unwrap(),
+            Some(false)
+        );
+        assert_eq!(
+            decoded_bool_result(Ok(VARIANT::from(true))).unwrap(),
+            Some(true)
+        );
+        for value in [VARIANT::default(), VARIANT::from(0i32)] {
+            assert_eq!(decoded_bool_result(Ok(value)).unwrap(), None);
+        }
+        let failed = decoded_bool_result(Err(windows::core::Error::from_hresult(
+            windows::core::HRESULT(0x80004005u32 as i32),
+        )));
+        assert!(failed.is_err());
+        assert_eq!(failed.ok().flatten(), None);
+        // Structural, text-cache and post-check gates all redact on TRUE or unknown.
+        for position in 0..3 {
+            for unsafe_flag in [Some(true), None] {
+                let mut flags = [Some(false); 3];
+                flags[position] = unsafe_flag;
+                assert!(!text_allowed(confirmed_password(flags)));
+            }
+        }
     }
 
     #[test]
