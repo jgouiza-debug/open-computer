@@ -192,8 +192,10 @@ for limits, password redaction, timeouts, and action-authority boundaries.
 Compact control text is intended to reduce model input for ordinary Windows
 controls. Canvas content and incomplete accessibility trees still need images.
 The model runner can use it with `--observation-mode semantic` or `auto`;
-image mode remains the default. No model speedup from Rust or UI Automation is
-claimed without a measured model run.
+image mode remains the default. One live read-only fixture comparison used 630
+prompt tokens for control text versus 720 for the image, with all four answers
+correct. See [the timing and cache limitations](docs/performance.md#measured-semantic-versus-image-input);
+this is not a general Rust speedup or an autonomous input-task result.
 The [owned-window validation results](docs/native-validation.md) record pixel
 agreement, password redaction, and measured observation time.
 

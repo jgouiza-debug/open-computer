@@ -5,6 +5,38 @@ They separate capture cost, request size, server-reported model tokens, and mode
 time. [The measured counters are available as JSON](performance-results.json).
 They do not predict performance on other models or machines.
 
+## Measured semantic versus image input
+
+A later live run compared the same 720×440 owned Win32 fixture as an image and
+as compact UIA text. All four responses correctly identified **Test click** and
+the **0** counter. The model only called a reporting tool; no desktop input was
+dispatched. [The complete counters are available as JSON](semantic-performance-results.json).
+
+| Order | Input | Request seconds | Prompt tokens | Completion tokens | Cached prompt tokens | Server prefill ms | Server decode ms |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| A1 | Image | 16.544 | 720 | 41 | 0 | 5,003.6 | 700.7 |
+| B1 | Control text | 2.044 | 630 | 41 | 0 | 1,478.9 | 561.0 |
+| B2 | Control text | 0.789 | 630 | 41 | 623 | 226.4 | 541.7 |
+| A2 | Image | 3.380 | 720 | 41 | 0 | 1,585.1 | 557.5 |
+
+Control text used **12.5% fewer prompt tokens** in this fixture. The uncached
+text request took 2.044 seconds versus 3.380 seconds for the later image request,
+an observed 39.5% reduction. This is a small, order-dependent comparison: the
+first image includes cold vision/runtime effects, and the second text request
+benefits from prefix caching. Do not average the four calls into a general speed
+claim. Vision encoding time was not reported separately. Request seconds include
+the model HTTP round trip; server prefill/decode counters describe narrower phases.
+The reporting harness does not include rotating action observation IDs or action
+history, so its repeated-prompt cache hit is not a production control-loop result.
+
+The isolated run used the existing local FlashNext/Q2 profile on two AMD GPUs,
+an 8,192-token context, MTP disabled, reasoning off and a 256-token response cap.
+Its 93.163-second model load is excluded from the table. Minimum observed free
+RAM was 14.44 GiB; sampled free GPU memory stayed above 2.53 GiB and 3.00 GiB.
+The isolated processes exited afterward, and the original unloaded runtime and
+its configuration remained unchanged. These results do not establish broad app
+coverage, a general Rust speedup, or autonomous semantic input-task completion.
+
 ## Measured model comparison
 
 The final read-only comparison used the same saved, owned fixture image, task,

@@ -1,0 +1,263 @@
+{
+  "schema_version": 1,
+  "measured_on": "2026-11-07",
+  "source_commit": "7960e2c62bdbec89e58cc40725a43bd9dc4847df",
+  "scope": "One 720x440 owned Win32 fixture, serial ABBA read-only report_target requests; no desktop action dispatch.",
+  "model_alias": "flash-next-q2-huihui-dual-amd",
+  "engine": "Existing Strata HIP executable, configured engine-turbo-0.1.56",
+  "hardware": [
+    "AMD Radeon RX 9060 XT",
+    "AMD Radeon RX 7900 XT"
+  ],
+  "configuration": {
+    "context_tokens": 8192,
+    "max_output_tokens": 256,
+    "reasoning": "off",
+    "spec": 2,
+    "mtp_enabled": false,
+    "expert_resident_budget_gib": 8,
+    "conversation_cache_mib": 256,
+    "conversation_cache_slots": 1,
+    "vision_encoder_device": "CPU",
+    "vision_encoder_threads": 4,
+    "vision_max_tokens": 1024
+  },
+  "completed": true,
+  "all_answers_correct": true,
+  "tool_dispatch": false,
+  "order": "ABBA",
+  "image_sha256": "5aadcf3d5d1c386d8f62012b6a26e106ddec3f00ebd41a6ab78f3839ec5e1966",
+  "tree_sha256": "b50a7fe80c59c56375751851330828a532dc7c979133d1a1ffb65832bcb18f39",
+  "helper_sha256": "3ba321acc65b9f84131c0e615f4817eb5865f4b3ab668c298a5535b29e7a757d",
+  "vision_encode_ms": null,
+  "calls": [
+    {
+      "index": 1,
+      "condition": "A",
+      "representation": "image",
+      "status": "ok",
+      "request_bytes": 7155,
+      "request_sha256": "153d3a4a3993b15ffcd038562316ddd39cebdf46f779f20722b5cd69670e599f",
+      "requested_max_tokens": 256,
+      "image_pixels": 316800,
+      "png_bytes": 4518,
+      "tree_characters": 0,
+      "wrapper_elapsed_ms": 16568.025299999135,
+      "model_metrics": [
+        {
+          "phase": "model",
+          "elapsed_ms": 16544.477,
+          "request_bytes": 7155,
+          "response_bytes": 820,
+          "status": "ok",
+          "server_usage": {
+            "prompt_tokens": 720,
+            "completion_tokens": 41,
+            "total_tokens": 761,
+            "cached_tokens": 0
+          },
+          "usage_source": "server",
+          "server_timings": {
+            "cache_n": 0,
+            "prompt_n": 720,
+            "predicted_n": 41,
+            "prompt_ms": 5003.6,
+            "predicted_ms": 700.7,
+            "prompt_per_token_ms": 6.949,
+            "predicted_per_token_ms": 17.09,
+            "prompt_per_second": 143.9,
+            "predicted_per_second": 58.5
+          },
+          "timings_source": "server",
+          "requested_reasoning": "off"
+        }
+      ],
+      "accuracy": {
+        "format_valid": true,
+        "label_correct": true,
+        "counter_correct": true,
+        "correct": true,
+        "reported_label": "Test click",
+        "reported_counter": 0
+      }
+    },
+    {
+      "index": 2,
+      "condition": "B",
+      "representation": "semantic",
+      "status": "ok",
+      "request_bytes": 1744,
+      "request_sha256": "6b362eadf5a746c773976ead776139637b8d27b1d299b3a6f488d19111b870f3",
+      "requested_max_tokens": 256,
+      "image_pixels": 0,
+      "png_bytes": 0,
+      "tree_characters": 579,
+      "wrapper_elapsed_ms": 2067.698400001973,
+      "model_metrics": [
+        {
+          "phase": "model",
+          "elapsed_ms": 2044.001,
+          "request_bytes": 1744,
+          "response_bytes": 821,
+          "status": "ok",
+          "server_usage": {
+            "prompt_tokens": 630,
+            "completion_tokens": 41,
+            "total_tokens": 671,
+            "cached_tokens": 0
+          },
+          "usage_source": "server",
+          "server_timings": {
+            "cache_n": 0,
+            "prompt_n": 630,
+            "predicted_n": 41,
+            "prompt_ms": 1478.9,
+            "predicted_ms": 561.0,
+            "prompt_per_token_ms": 2.347,
+            "predicted_per_token_ms": 13.683,
+            "prompt_per_second": 426.0,
+            "predicted_per_second": 73.1
+          },
+          "timings_source": "server",
+          "requested_reasoning": "off"
+        }
+      ],
+      "accuracy": {
+        "format_valid": true,
+        "label_correct": true,
+        "counter_correct": true,
+        "correct": true,
+        "reported_label": "Test click",
+        "reported_counter": 0
+      }
+    },
+    {
+      "index": 3,
+      "condition": "B",
+      "representation": "semantic",
+      "status": "ok",
+      "request_bytes": 1744,
+      "request_sha256": "6b362eadf5a746c773976ead776139637b8d27b1d299b3a6f488d19111b870f3",
+      "requested_max_tokens": 256,
+      "image_pixels": 0,
+      "png_bytes": 0,
+      "tree_characters": 579,
+      "wrapper_elapsed_ms": 811.492000000726,
+      "model_metrics": [
+        {
+          "phase": "model",
+          "elapsed_ms": 788.816,
+          "request_bytes": 1744,
+          "response_bytes": 822,
+          "status": "ok",
+          "server_usage": {
+            "prompt_tokens": 630,
+            "completion_tokens": 41,
+            "total_tokens": 671,
+            "cached_tokens": 623
+          },
+          "usage_source": "server",
+          "server_timings": {
+            "cache_n": 623,
+            "prompt_n": 7,
+            "predicted_n": 41,
+            "prompt_ms": 226.4,
+            "predicted_ms": 541.7,
+            "prompt_per_token_ms": 32.343,
+            "predicted_per_token_ms": 13.212,
+            "prompt_per_second": 30.9,
+            "predicted_per_second": 75.7
+          },
+          "timings_source": "server",
+          "requested_reasoning": "off"
+        }
+      ],
+      "accuracy": {
+        "format_valid": true,
+        "label_correct": true,
+        "counter_correct": true,
+        "correct": true,
+        "reported_label": "Test click",
+        "reported_counter": 0
+      }
+    },
+    {
+      "index": 4,
+      "condition": "A",
+      "representation": "image",
+      "status": "ok",
+      "request_bytes": 7155,
+      "request_sha256": "153d3a4a3993b15ffcd038562316ddd39cebdf46f779f20722b5cd69670e599f",
+      "requested_max_tokens": 256,
+      "image_pixels": 316800,
+      "png_bytes": 4518,
+      "tree_characters": 0,
+      "wrapper_elapsed_ms": 3404.4194999987667,
+      "model_metrics": [
+        {
+          "phase": "model",
+          "elapsed_ms": 3379.505,
+          "request_bytes": 7155,
+          "response_bytes": 821,
+          "status": "ok",
+          "server_usage": {
+            "prompt_tokens": 720,
+            "completion_tokens": 41,
+            "total_tokens": 761,
+            "cached_tokens": 0
+          },
+          "usage_source": "server",
+          "server_timings": {
+            "cache_n": 0,
+            "prompt_n": 720,
+            "predicted_n": 41,
+            "prompt_ms": 1585.1,
+            "predicted_ms": 557.5,
+            "prompt_per_token_ms": 2.202,
+            "predicted_per_token_ms": 13.598,
+            "prompt_per_second": 454.2,
+            "predicted_per_second": 73.5
+          },
+          "timings_source": "server",
+          "requested_reasoning": "off"
+        }
+      ],
+      "accuracy": {
+        "format_valid": true,
+        "label_correct": true,
+        "counter_correct": true,
+        "correct": true,
+        "reported_label": "Test click",
+        "reported_counter": 0
+      }
+    }
+  ],
+  "supervision": {
+    "model_load_seconds": 93.163,
+    "load_excluded_from_request_timings": true,
+    "minimum_available_ram_gib": 14.437244415283203,
+    "minimum_gpu_free_gib": [
+      {
+        "index": 0,
+        "free_gib": 2.5322265625
+      },
+      {
+        "index": 1,
+        "free_gib": 3.0009765625
+      }
+    ],
+    "owned_children_exited": true,
+    "original_runtime_unloaded": true,
+    "original_state_unchanged": true,
+    "original_config_unchanged": true
+  },
+  "limitations": [
+    "Only two calls per representation on one standard-control fixture; no broad-app or autonomous input-task proof.",
+    "First image includes cold vision/runtime effects; second text request has 623 cached prompt tokens.",
+    "Do not average these four calls into a universal speedup. MTP is disabled and this is not the original million-token configuration.",
+    "Vision encoding time is not separately reported; unaccounted wall time cannot be assigned wholly to one phase.",
+    "Token counts and prompt/decode timings are server-reported; request bytes are a separate measure.",
+    "A failed preliminary startup used unsupported spec=1; it performed no benchmark request and is excluded from these four calls.",
+    "The read-only reporting harness has no rotating action observation IDs or action history; its cache hit is not a production control-loop measurement."
+  ]
+}

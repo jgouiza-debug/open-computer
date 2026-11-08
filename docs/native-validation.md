@@ -19,8 +19,10 @@ performed. The fixture closed cleanly after the checks.
 These are small, sequential measurements on one static window. They establish
 native functionality, not a general Rust speed advantage. UI Automation was
 slower than capture on this fixture; its potential benefit is reducing model
-input. Character counts are not tokenizer counts. No image-versus-semantic model
-latency or token improvement has been measured for this helper yet.
+input. Character counts are not tokenizer counts. A subsequent live, read-only
+model comparison measured 630 prompt tokens for control text versus 720 for the
+image, with all four answers correct. Its timing and cache limitations are in
+[the semantic performance results](performance.md#measured-semantic-versus-image-input).
 
 The Python controller remains the production input authority. The optional helper
 provides observation only; it has no click, typing, or arming operation. The

@@ -4,8 +4,10 @@ The standard panel and example model runner use images by default. An optional
 Rust helper reads the selected window's Windows accessibility controls. This
 can give a model labels, field values and control bounds without sending an
 image to that model. Coverage depends on the application and its accessibility
-provider; custom canvas controls may still require images. No semantic model
-token, accuracy or speed improvement is claimed without a measured model run.
+provider; custom canvas controls may still require images. One live read-only
+fixture comparison used 12.5% fewer prompt tokens with control text and answered
+all four requests correctly. See [the timings and limits](performance.md#measured-semantic-versus-image-input);
+this does not establish broad app coverage or autonomous input-task completion.
 
 ## Choose the helper explicitly
 
