@@ -1,5 +1,8 @@
 Open Computer - Windows x64 portable preview
 
+Requires Windows 10 or later (x64). The system-provided Universal CRT is used;
+Windows 8.1 and earlier are not supported.
+
 Extract the complete folder before starting. Keep both EXEs and _internal together.
 Double-click OpenComputer.exe for the ordinary panel. No Python, pip, Rust,
 administrator account, PATH change or background model service is required.

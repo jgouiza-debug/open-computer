@@ -44,6 +44,25 @@ class BuildBoundaryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 support.checked_copy(root / "outside.txt", root / "out/file", root / "allowed")
 
+    def test_only_documented_flat_os_binaries_are_omitted(self):
+        omitted = [(name, "outside-reviewed-inputs/" + name, "BINARY") for name in
+                   ("api-ms-win-crt-locale-l1-1-0.dll", "api-ms-win-core-synch-l1-2-0.dll", "UCRTBASE.DLL")]
+        retained = [(name, "still-needs-existing-origin-guard/" + name, "BINARY") for name in
+                    ("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "libcrypto-3.dll",
+                     "api-ms-win-custom.dll", "api-ms-win-crt-locale-l1-1-0.dll.bak",
+                     "PIL/api-ms-win-crt-locale-l1-1-0.dll")]
+        retained.append(("api-ms-win-crt-locale-l1-1-0.dll", "not-a-binary", "DATA"))
+        kept, names = support.omit_windows_os_components(omitted + retained)
+        self.assertEqual(kept, retained)
+        self.assertEqual(set(names), {item[0] for item in omitted})
+
+    def test_os_omission_presence_is_case_insensitive(self):
+        for actual, omitted in (("_internal/UCRTBASE.DLL", "ucrtbase.dll"),
+                                ("_INTERNAL/api-ms-win-crt-locale-l1-1-0.dll", "API-MS-WIN-CRT-LOCALE-L1-1-0.DLL")):
+            with self.subTest(actual=actual), self.assertRaises(ValueError):
+                support.verify_os_components_absent({actual}, [omitted])
+        support.verify_os_components_absent({"_internal/vcruntime140.dll"}, ["ucrtbase.dll"])
+
     def test_rejected_origin_diagnostic_is_bounded_and_redacted(self):
         with tempfile.TemporaryDirectory(prefix="portable-origin-") as tmp:
             base = Path(tmp)

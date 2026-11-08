@@ -1,7 +1,8 @@
 # Windows portable preview
 
 The portable build packages the desktop panel, MCP bridge, Python, Tk, and Pillow
-in one Windows x64 folder. You supply the model and model client separately.
+in one folder for Windows 10 or newer, x64. You supply the model and model
+client separately.
 
 ## Start the panel
 

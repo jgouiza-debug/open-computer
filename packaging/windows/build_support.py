@@ -38,6 +38,16 @@ PACKAGING_FILES = (
     "Start-OpenComputer-Semantic.cmd",
 )
 TOKEN = re.compile(rb"(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{35,}|sk-[A-Za-z0-9]{30,}|xox[baprs]-[A-Za-z0-9-]{20,})")
+WINDOWS_OS_COMPONENT = re.compile(r"(?:api-ms-win-(?:core|crt)-[a-z0-9-]+|ucrtbase)\.dll", re.IGNORECASE)
+WINDOWS_OS_POLICY = {
+    "minimum_windows": "10",
+    "reason": "Windows10+ provides these API-set/UCRT components; app-local UCRT copies are not used.",
+    "references": [
+        "https://learn.microsoft.com/en-us/cpp/windows/universal-crt-deployment?view=msvc-170",
+        "https://docs.python.org/3.14/using/windows.html#supported-windows-versions",
+        "https://github.com/pyinstaller/pyinstaller/blob/v6.22.3/PyInstaller/depend/dylib.py",
+    ],
+}
 
 
 def digest(path: Path) -> str:
@@ -55,6 +65,28 @@ def relative(value: str) -> str:
     if not value or path.is_absolute() or any(p in {"", ".", ".."} for p in value.split("/")) or ":" in value:
         raise ValueError("Unsafe package-relative path")
     return path.as_posix()
+
+
+def omit_windows_os_components(entries: list[tuple[str, str, str]]) -> tuple[list, list[str]]:
+    """Do not redistribute OS API sets/UCRT for the fixed Windows10+ target.
+
+    This does not admit any outside-origin DLL. VC runtime/Pillow/other DLLs,
+    nested destinations and non-binary records retain their existing guards.
+    """
+    kept, omitted = [], []
+    for entry in entries:
+        name = relative(entry[0])
+        if entry[2] == "BINARY" and WINDOWS_OS_COMPONENT.fullmatch(name):
+            omitted.append(name)
+        else:
+            kept.append(entry)
+    return kept, sorted(set(omitted), key=str.casefold)
+
+
+def verify_os_components_absent(actual: set[str], omitted_names: list[str]) -> None:
+    folded = {name.casefold() for name in actual}
+    if any(("_internal/" + name).casefold() in folded for name in omitted_names):
+        raise ValueError("An OS component recorded as omitted is still bundled")
 
 
 def checked_copy(source: Path, target: Path, source_root: Path) -> None:
@@ -277,6 +309,12 @@ def finalize(root: Path, bundle: Path, toc_path: Path, wheels: Path,
     if context["native_tree"] != NATIVE_TREE:
         raise ValueError("Native source changed since the reused helper was built")
     expected = {"OpenComputer.exe", "OpenComputerCLI.exe"}
+    omissions = load(toc_path.with_suffix(".os-components.json"))
+    omitted_names = omissions["names"]
+    if (omissions["policy"] != WINDOWS_OS_POLICY or not isinstance(omitted_names, list) or
+            len(omitted_names) != len(set(omitted_names)) or
+            any(not isinstance(name, str) or not WINDOWS_OS_COMPONENT.fullmatch(name) for name in omitted_names)):
+        raise ValueError("OS component omission evidence differs from the narrow Windows10+ policy")
     origins = {}
     for row in load(toc_path):
         name = relative(row["path"])
@@ -296,6 +334,7 @@ def finalize(root: Path, bundle: Path, toc_path: Path, wheels: Path,
     actual = {p.relative_to(bundle).as_posix() for p in bundle.rglob("*") if p.is_file()}
     if actual != expected or any(p.is_symlink() for p in bundle.rglob("*")):
         raise ValueError("COLLECT output differs from its explicit TOC allowlist")
+    verify_os_components_absent(actual, omitted_names)
     for source, target in ((root / "LICENSE", "LICENSE"),
                            (root / "packaging/windows/PORTABLE-README.txt", "PORTABLE-README.txt"),
                            (root / "packaging/windows/Start-OpenComputer-Semantic.cmd", "Start-OpenComputer-Semantic.cmd")):
@@ -325,13 +364,14 @@ def finalize(root: Path, bundle: Path, toc_path: Path, wheels: Path,
     tool_versions = {item["name"]: importlib.metadata.version(item["name"]) for item in deps["packages"]}
     if any(tool_versions[r["name"]] != r["version"] for r in deps["packages"]):
         raise ValueError("Installed dependency differs from locked version")
-    manifest = {"schema_version": 1, "app": {"version": version, "source_commit": context["source_commit"], "source_clean": True},
+    manifest = {"schema_version": 1, "app": {"version": version, "source_commit": context["source_commit"], "source_clean": True, "minimum_windows": "10"},
                 "toolchain": {"python": PYTHON, "architecture": "x64", "packages": tool_versions,
                               "runner_image": context["runner_image"], "windows": context["windows"]},
                 "inputs": {"spec_sha256": digest(root / "packaging/windows/OpenComputer.spec"),
                            "lock_sha256": digest(root / "packaging/windows/requirements-build.lock"),
                            "wheels": [{k: r[k] for k in ("name", "version", "filename", "sha256")} for r in deps["packages"]],
                            "actions": context["actions"]}, "optional_native": native, "files": inventory,
+                "os_components_omitted": {"policy": WINDOWS_OS_POLICY, "names": omitted_names},
                 "checks": {"allowlist": "passed", "notice_hashes": "passed", "pe_subsystems": "passed",
                            "privacy_content": "passed", "bytecode_filename_count": code_count,
                            "clean_windows_vm": "not performed", "application_signing": "unsigned",
