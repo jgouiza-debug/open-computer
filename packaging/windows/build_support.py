@@ -28,6 +28,17 @@ NATIVE_SHA = "3ba321acc65b9f84131c0e615f4817eb5865f4b3ab668c298a5535b29e7a757d"
 NATIVE_ZIP_SHA = "7d101ac98ab1a2c1cba0ed8a212454e7d39d5e882a49f42c858b4a43eddcd869"
 NATIVE_SOURCE = "05c3721b3962ace619441431fcdb8e4eb4be2e93"
 NATIVE_TREE = "bb5910da594cefabb3cb7e00b41c1e0ca14c1199"
+NATIVE_LOCK_LF_SHA = "9b2cf2a4b424394929161c19e45cc31bf07fb0242683d13d403f2e95e19461f6"
+NATIVE_TOML_LF_SHA = "d538610e2b3da836279c4da40ec95cf15f50bf829778878b14473a278ef96e94"
+RUST_TOOLCHAIN = "1.99.0-x86_64-pc-windows-msvc"
+RUSTC_VERSION = "rustc 1.99.0 (b940084d7 2026-09-28)"
+NATIVE_TARGET = "x86_64-pc-windows-msvc"
+NATIVE_FILES = ("Cargo.toml", "Cargo.lock", "src/main.rs", "src/window.rs", "src/protocol.rs",
+                "src/capture.rs", "src/accessibility.rs", "tests/wire.rs")
+RUST_LICENSE_FILES = ("Apache-2.0.txt", "BSD-2-Clause.txt", "CC-BY-SA-4.0.txt", "GCC-exception-3.1.txt",
+                      "GPL-2.0-only.txt", "GPL-3.0-or-later.txt", "ISC.txt", "LLVM-exception.txt",
+                      "MIT.txt", "NCSA.txt", "OFL-1.1.txt", "Unicode-3.0.txt")
+STAGE_MARKER = ".opencomputer-build-stage.json"
 APP_MODULES = (
     "__init__", "app", "backend", "cli", "controller", "mcp", "model_client",
     "native_client", "overlay", "semantic", "server", "setup", "headless", "safety", "headless_overlay",
@@ -54,6 +65,15 @@ WINDOWS_OS_POLICY = {
 def digest(path: Path) -> str:
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def canonical_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
+def native_source_inventory(root: Path) -> list[dict]:
+    return [{"path": "native/" + name, "sha256": canonical_digest(root / "native" / name)}
+            for name in NATIVE_FILES]
 
 
 def load(path: Path) -> Any:
@@ -153,17 +173,23 @@ def validate_inputs(root: Path) -> dict:
 
 def stage(root: Path, destination: Path) -> None:
     validate_inputs(root)
+    unexpected_pin = root / "opencomputer/_native_pin.py"
+    if unexpected_pin.exists() or unexpected_pin.is_symlink():
+        raise ValueError("Source checkout must not contain a generated native pin")
     if destination.exists():
         raise ValueError("Staging destination must be new; no existing files are deleted")
     files = ["LICENSE", "pyproject.toml"]
     files += ["scripts/install_skill.ps1", "skills/open-computer/SKILL.md",
               "skills/open-computer/scripts/open-computer.ps1", "skills/open-computer/references/hosts.md"]
     files += [f"opencomputer/{name}.py" for name in APP_MODULES]
+    files += ["native/" + name for name in NATIVE_FILES]
     files += [f"packaging/windows/{name}" for name in PACKAGING_FILES]
     catalog = load(root / "packaging/windows/runtime-licenses.json")
     files += ["packaging/windows/" + r["file"] for r in catalog["licenses"] + [catalog["upstream_sbom"]]]
     for name in files:
         checked_copy(root / relative(name), destination / relative(name), root)
+    (destination / STAGE_MARKER).write_text(json.dumps({"schema_version": 1,
+        "kind": "opencomputer-portable-build-stage", "native_sources": native_source_inventory(root)}), encoding="utf-8")
 
 
 def pe_header(path: Path) -> dict:
@@ -211,12 +237,21 @@ def check_code(code: types.CodeType, forbidden: list[str]) -> int:
     return count
 
 
-def inspect_archives(bundle: Path, forbidden: list[str]) -> int:
+def check_native_pin_code(code: types.CodeType, expected_sha: str) -> None:
+    expected = compile(f"NATIVE_SHA256 = {expected_sha!r}\n", "opencomputer/_native_pin.py", "exec")
+    if (not isinstance(code, types.CodeType) or not re.fullmatch(r"[a-f0-9]{64}", expected_sha)
+            or code.co_code != expected.co_code or code.co_consts != expected.co_consts
+            or code.co_names != expected.co_names or code.co_varnames != expected.co_varnames):
+        raise ValueError("Compiled native pin is not the exact generated SHA256 literal")
+
+
+def inspect_archives(bundle: Path, forbidden: list[str], native_sha: str | None = None) -> int:
     from PyInstaller.archive.readers import CArchiveReader
 
     count = 0
     for filename in ("OpenComputer.exe", "OpenComputerCLI.exe"):
         archive = CArchiveReader(str(bundle / filename))
+        pin_count = 0
         for name, item in archive.toc.items():
             kind = item[-1]
             if kind == "z":
@@ -225,11 +260,18 @@ def inspect_archives(bundle: Path, forbidden: list[str]) -> int:
                     code = pyz.extract(module)
                     if isinstance(code, types.CodeType):
                         count += check_code(code, forbidden)
+                        if module == "opencomputer._native_pin":
+                            if native_sha is None:
+                                raise ValueError("Generated native pin has no expected helper digest")
+                            check_native_pin_code(code, native_sha)
+                            pin_count += 1
             elif kind in {"s", "m", "M"}:
                 code = marshal.loads(archive.extract(name))
                 if not isinstance(code, types.CodeType):
                     raise ValueError("Unexpected executable Python archive entry")
                 count += check_code(code, forbidden)
+        if native_sha is not None and pin_count != 1:
+            raise ValueError("Each frozen executable must contain exactly one generated native pin")
     with zipfile.ZipFile(bundle / "_internal/base_library.zip") as archive:
         for entry in archive.infolist():
             if entry.filename.endswith(".pyc"):
@@ -242,13 +284,17 @@ def inspect_archives(bundle: Path, forbidden: list[str]) -> int:
     return count
 
 
-def native_payload(archive_path: Path, root: Path, bundle: Path, expected: set[str]) -> dict:
+def _legacy_licenses(archive_path: Path, root: Path) -> dict[str, bytes]:
+    if (canonical_digest(root / "native/Cargo.lock") != NATIVE_LOCK_LF_SHA
+            or canonical_digest(root / "native/Cargo.toml") != NATIVE_TOML_LF_SHA):
+        raise ValueError("Native Cargo inputs changed; reviewed dependency license reuse is not valid")
     if digest(archive_path) != NATIVE_ZIP_SHA:
         raise ValueError("Native archive differs from the reviewed published release")
     inputs = load(root / "packaging/windows/native-input.json")
+    payloads = {}
     with zipfile.ZipFile(archive_path) as archive:
         members = {entry.filename: entry for entry in archive.infolist() if not entry.is_dir()}
-        if set(members) != {r["path"] for r in inputs["files"]}:
+        if len(members) != len([entry for entry in archive.infolist() if not entry.is_dir()]) or set(members) != {r["path"] for r in inputs["files"]}:
             raise ValueError("Native archive file allowlist differs")
         if sum(entry.file_size for entry in members.values()) > 10 << 20:
             raise ValueError("Oversized native release")
@@ -264,16 +310,159 @@ def native_payload(archive_path: Path, root: Path, bundle: Path, expected: set[s
             payload = archive.read(name)
             if hashlib.sha256(payload).hexdigest() != item["sha256"]:
                 raise ValueError("Native member hash differs")
-            target = "optional/opencomputer-native.exe" if name == "opencomputer-native.exe" else "THIRD_PARTY_NOTICES/native-v0.1.3/" + name
+            if name not in {"opencomputer-native.exe", "BUILD-INFO.json"}:
+                payloads[name] = payload
+    if payloads["LICENSE"] != (root / "LICENSE").read_bytes():
+        raise ValueError("Current project license differs from the reviewed license input")
+    return payloads
+
+
+def validate_native_build(build: dict, context: dict) -> None:
+    if (type(build.get("schema_version")) is not int or build["schema_version"] != 1
+            or build.get("native_input_capability") is not False
+            or not re.fullmatch(r"[a-f0-9]{40}", str(context.get("source_commit", "")))
+            or not re.fullmatch(r"[a-f0-9]{40}", str(context.get("native_tree", "")))
+            or build.get("source_commit") != context["source_commit"]
+            or build.get("native_tree") != context["native_tree"]
+            or build.get("native_sources") != context.get("native_source_files")
+            or build.get("cargo_lock_lf_sha256") != NATIVE_LOCK_LF_SHA
+            or build.get("cargo_toml_lf_sha256") != NATIVE_TOML_LF_SHA):
+        raise ValueError("Fresh native provenance does not match the current committed Cargo source")
+    sources = build["native_sources"]
+    if (not isinstance(sources, list) or {row.get("path") for row in sources} != {"native/" + name for name in NATIVE_FILES}
+            or len(sources) != len(NATIVE_FILES)
+            or any(not re.fullmatch(r"[a-f0-9]{64}", str(row.get("sha256", ""))) for row in sources)):
+        raise ValueError("Native staged source inventory differs")
+    by_name = {row["path"]: row["sha256"] for row in sources}
+    if by_name["native/Cargo.lock"] != NATIVE_LOCK_LF_SHA or by_name["native/Cargo.toml"] != NATIVE_TOML_LF_SHA:
+        raise ValueError("Native staged Cargo inputs differ from the reviewed dependency licenses")
+    if (build.get("rust_toolchain") != RUST_TOOLCHAIN or build.get("rustc_version") != RUSTC_VERSION
+            or build.get("target") != NATIVE_TARGET
+            or not str(build.get("cargo_version", "")).startswith("cargo 1.99.0 ")
+            or not isinstance(build.get("rustc_verbose"), str)
+            or "host: " + NATIVE_TARGET not in build["rustc_verbose"].splitlines()
+            or "release: 1.99.0" not in build["rustc_verbose"].splitlines()):
+        raise ValueError("Fresh native toolchain differs from exact reviewed Rust1.99.0")
+    sha = build.get("native_sha256")
+    if not isinstance(sha, str) or not re.fullmatch(r"[a-f0-9]{64}", sha):
+        raise ValueError("Fresh native helper digest is malformed")
+    if context["native_tree"] != NATIVE_TREE and sha == NATIVE_SHA:
+        raise ValueError("Changed native source cannot reuse the old published helper")
+    if (build.get("license_source") != {"archive_sha256": NATIVE_ZIP_SHA, "source_commit": NATIVE_SOURCE}
+            or build.get("rust_library_notices") != [row for row in build.get("files", [])
+                                                     if row["path"].startswith("rust-library-notices/")]):
+        raise ValueError("Fresh native license provenance differs")
+
+
+def _rust_notices(sysroot: Path) -> dict[str, bytes]:
+    base = (sysroot / "share/doc/rust").resolve(strict=True)
+    names = ["COPYRIGHT-library.html"] + ["licenses/" + name for name in RUST_LICENSE_FILES]
+    payloads = {}
+    for name in names:
+        path = base / name
+        if path.is_symlink() or not path.resolve(strict=True).is_relative_to(base) or path.stat().st_size > 2 << 20:
+            raise ValueError("Rust library notice left its verified toolchain input or exceeded its bound")
+        payloads["rust-library-notices/" + name] = path.read_bytes()
+    return payloads
+
+
+def prepare_native(root: Path, binary: Path, context_path: Path, license_zip: Path,
+                   rust_sysroot: Path, output: Path) -> Path:
+    marker = load(root / STAGE_MARKER)
+    if marker.get("kind") != "opencomputer-portable-build-stage" or (root / ".git").exists():
+        raise ValueError("Native build pin may be generated only in an isolated packaging stage")
+    pin = root / "opencomputer/_native_pin.py"
+    if pin.exists() or pin.is_symlink() or output.exists():
+        raise ValueError("Generated native pin/archive must be new")
+    expected_binary = root.parent / "native-target" / NATIVE_TARGET / "release/opencomputer-native.exe"
+    if binary.is_symlink() or binary.resolve(strict=True) != expected_binary.resolve(strict=True):
+        raise ValueError("Native helper must come from this isolated Cargo target directory")
+    context = load(context_path)
+    sources = native_source_inventory(root)
+    if not context.get("source_clean") or sources != marker["native_sources"] or sources != context["native_source_files"]:
+        raise ValueError("Staged native source changed before packaging")
+    if pe_header(binary)["subsystem"] != 3:
+        raise ValueError("Fresh native helper must be an AMD64 console executable")
+    privacy_bytes(binary.read_bytes(), context["private_scan_roots"])
+    payloads = _legacy_licenses(license_zip, root)
+    payloads.update(_rust_notices(rust_sysroot))
+    payloads["opencomputer-native.exe"] = binary.read_bytes()
+    files = [{"path": name, "sha256": hashlib.sha256(value).hexdigest(), "size": len(value)}
+             for name, value in sorted(payloads.items())]
+    build = {"schema_version": 1, "source_commit": context["source_commit"], "native_tree": context["native_tree"],
+        "native_sources": sources, "native_sha256": digest(binary), "native_input_capability": False,
+        "cargo_lock_lf_sha256": canonical_digest(root / "native/Cargo.lock"),
+        "cargo_toml_lf_sha256": canonical_digest(root / "native/Cargo.toml"),
+        "rust_toolchain": RUST_TOOLCHAIN, "rustc_version": context["native_rustc_version"],
+        "rustc_verbose": context["native_rustc_verbose"], "cargo_version": context["native_cargo_version"],
+        "target": NATIVE_TARGET, "path_remapping": {"source": "/source", "repository": "/repository", "user": "/user"},
+        "compiler_flags": {"debuginfo": 0, "strip": "symbols", "pdb_alt_path": "opencomputer-native.pdb"},
+        "license_source": {"archive_sha256": NATIVE_ZIP_SHA, "source_commit": NATIVE_SOURCE},
+        "rust_library_notices": [row for row in files if row["path"].startswith("rust-library-notices/")], "files": files}
+    validate_native_build(build, context)
+    encoded = json.dumps(build, sort_keys=True, indent=2).encode("utf-8") + b"\n"
+    privacy_bytes(encoded, context["private_scan_roots"])
+    payloads["BUILD-INFO.json"] = encoded
+    with pin.open("x", encoding="ascii", newline="\n") as stream:
+        stream.write(f"NATIVE_SHA256 = {build['native_sha256']!r}\n")
+    with zipfile.ZipFile(output, "x", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+        for name, payload in sorted(payloads.items()):
+            info = zipfile.ZipInfo(name, (2026, 1, 1, 0, 0, 0))
+            info.compress_type, info.external_attr = zipfile.ZIP_DEFLATED, 0o644 << 16
+            archive.writestr(info, payload)
+    context["native_artifact"] = {"archive_sha256": digest(output), "sha256": build["native_sha256"],
+                                  "build_info_sha256": hashlib.sha256(encoded).hexdigest()}
+    context_path.write_text(json.dumps(context, indent=2), encoding="utf-8")
+    return output
+
+
+def native_payload(archive_path: Path, root: Path, bundle: Path, expected: set[str], context: dict | None = None) -> dict:
+    artifact = (context or {}).get("native_artifact", {})
+    if digest(archive_path) != artifact.get("archive_sha256"):
+        raise ValueError("Native archive differs from this build's generated artifact")
+    with zipfile.ZipFile(archive_path) as archive:
+        entries = archive.infolist()
+        members = {entry.filename: entry for entry in entries}
+        if len(members) != len(entries) or sum(entry.file_size for entry in entries) > 20 << 20:
+            raise ValueError("Fresh native archive inventory is duplicate or oversized")
+        encoded = archive.read("BUILD-INFO.json")
+        if hashlib.sha256(encoded).hexdigest() != artifact.get("build_info_sha256"):
+            raise ValueError("Fresh native build metadata changed")
+        build = json.loads(encoded)
+        validate_native_build(build, context)
+        if build["native_sha256"] != artifact.get("sha256"):
+            raise ValueError("Fresh native artifact digest differs")
+        legacy_rows = load(root / "packaging/windows/native-input.json")["files"]
+        legacy_names = {row["path"] for row in legacy_rows}
+        allowed = (legacy_names - {"BUILD-INFO.json"}) | {"rust-library-notices/COPYRIGHT-library.html"}
+        allowed |= {"rust-library-notices/licenses/" + name for name in RUST_LICENSE_FILES}
+        rows = build["files"]
+        if ({row["path"] for row in rows} != allowed or len(rows) != len(allowed)
+                or set(members) != allowed | {"BUILD-INFO.json"}):
+            raise ValueError("Fresh native archive allowlist differs")
+        actual_rows = {row["path"]: row for row in rows}
+        for row in legacy_rows:
+            if row["path"] not in {"opencomputer-native.exe", "BUILD-INFO.json"}:
+                actual = actual_rows[row["path"]]
+                if actual["sha256"] != row["sha256"] or actual["size"] != row["size"]:
+                    raise ValueError("Reused native dependency license bytes differ from their reviewed input")
+        for row in rows + [{"path": "BUILD-INFO.json", "sha256": hashlib.sha256(encoded).hexdigest(), "size": len(encoded)}]:
+            name = relative(row["path"])
+            payload = archive.read(name)
+            if len(payload) != row["size"] or hashlib.sha256(payload).hexdigest() != row["sha256"]:
+                raise ValueError("Fresh native member size/hash differs")
+            target = "optional/opencomputer-native.exe" if name == "opencomputer-native.exe" else "THIRD_PARTY_NOTICES/native-current/" + name
             path = bundle / target
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(payload)
             expected.add(target)
-    return {"path": "optional/opencomputer-native.exe", "sha256": NATIVE_SHA,
-            "archive_sha256": NATIVE_ZIP_SHA, "source_commit": NATIVE_SOURCE,
-            "native_tree": NATIVE_TREE, "license_dependency_count": 34,
-            "rust_toolchain": "Not recorded by reused published artifact; not rebuilt",
-            "automatic_enable": False, "supports_input": False}
+    return {"path": "optional/opencomputer-native.exe", "sha256": build["native_sha256"],
+            "archive_sha256": digest(archive_path), "source_commit": build["source_commit"], "native_tree": build["native_tree"],
+            "cargo_lock_lf_sha256": build["cargo_lock_lf_sha256"], "cargo_toml_lf_sha256": build["cargo_toml_lf_sha256"],
+            "license_dependency_count": 34, "license_source": build["license_source"],
+            "rust_library_notices": build["rust_library_notices"], "rust_toolchain": build["rust_toolchain"],
+            "rustc_version": build["rustc_version"], "cargo_version": build["cargo_version"],
+            "automatic_enable": True, "initialization": "lazy read-only semantics in frozen headless sessions", "supports_input": False}
 
 
 def notices(root: Path, bundle: Path, wheels: Path, deps: dict, expected: set[str]) -> None:
@@ -316,8 +505,9 @@ def finalize(root: Path, bundle: Path, toc_path: Path, wheels: Path,
     context = load(context_path)
     if not context["source_clean"] or not re.fullmatch(r"[a-f0-9]{40}", context["source_commit"]):
         raise ValueError("Release candidate requires a clean committed source checkout")
-    if context["native_tree"] != NATIVE_TREE:
-        raise ValueError("Native source changed since the reused helper was built")
+    if (not re.fullmatch(r"[a-f0-9]{40}", str(context.get("native_tree", "")))
+            or native_source_inventory(root) != context.get("native_source_files")):
+        raise ValueError("Current staged native source differs from this committed build")
     expected = {"OpenComputer.exe", "OpenComputerCLI.exe"}
     omissions = load(toc_path.with_suffix(".os-components.json"))
     omitted_names = omissions["names"]
@@ -355,10 +545,12 @@ def finalize(root: Path, bundle: Path, toc_path: Path, wheels: Path,
         checked_copy(source, bundle / target, root)
         expected.add(target)
     notices(root, bundle, wheels, deps, expected)
-    native = native_payload(native_zip, root, bundle, expected)
+    native = native_payload(native_zip, root, bundle, expected, context)
     native["cargo_lock_sha256"] = context["native_cargo_lock_sha256"]
-    if digest(bundle / native["path"]) != NATIVE_SHA:
-        raise ValueError("Extracted native helper hash differs")
+    if digest(bundle / native["path"]) != native["sha256"]:
+        raise ValueError("Extracted fresh native helper hash differs")
+    pin = root / "opencomputer/_native_pin.py"
+    check_native_pin_code(compile(pin.read_text(encoding="ascii"), "opencomputer/_native_pin.py", "exec"), native["sha256"])
     pe_header(bundle / native["path"])
     forbidden = context["private_scan_roots"]
     inventory = []
@@ -371,7 +563,7 @@ def finalize(root: Path, bundle: Path, toc_path: Path, wheels: Path,
             raise ValueError("Private/source-test file in payload")
         privacy_bytes(path.read_bytes(), forbidden)
         inventory.append({"path": name, "sha256": digest(path), "size": path.stat().st_size})
-    code_count = inspect_archives(bundle, forbidden)
+    code_count = inspect_archives(bundle, forbidden, native["sha256"])
     version = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
     if not re.fullmatch(r"\d+\.\d+\.\d+(?:[a-z0-9.]*)", version):
         raise ValueError("Unexpected application version")
@@ -457,9 +649,9 @@ def create_skill_archive(bundle: Path, output: Path) -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("validate-inputs", "stage", "finalize"))
+    parser.add_argument("command", choices=("validate-inputs", "stage", "prepare-native", "finalize"))
     parser.add_argument("--root", type=Path, required=True)
-    for name in ("destination", "bundle", "toc", "wheels", "context", "native-zip", "output"):
+    for name in ("destination", "bundle", "toc", "wheels", "context", "native-zip", "output", "native-exe", "license-zip", "rust-sysroot"):
         parser.add_argument("--" + name, type=Path)
     args = parser.parse_args()
     if args.command == "validate-inputs":
@@ -469,6 +661,10 @@ def main() -> None:
         if args.destination is None:
             parser.error("stage requires --destination")
         stage(args.root, args.destination)
+    elif args.command == "prepare-native":
+        if any(getattr(args, name) is None for name in ("native_exe", "context", "license_zip", "rust_sysroot", "output")):
+            parser.error("prepare-native requires native-exe/context/license-zip/rust-sysroot/output")
+        print(prepare_native(args.root, args.native_exe, args.context, args.license_zip, args.rust_sysroot, args.output))
     else:
         if any(getattr(args, name) is None for name in ("bundle", "toc", "wheels", "context", "native_zip", "output")):
             parser.error("finalize requires bundle/toc/wheels/context/native-zip/output")

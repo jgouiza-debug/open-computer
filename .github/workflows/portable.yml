@@ -24,6 +24,8 @@ jobs:
           python-version: '3.14.10'
           architecture: x64
           check-latest: false
+      - name: Select exact Rust MSVC toolchain
+        run: rustup toolchain install 1.99.0-x86_64-pc-windows-msvc --profile minimal
       - name: Build allowlisted portable candidate
         id: portable
         run: ./scripts/build-portable.ps1 -PythonPath (Get-Command python).Source

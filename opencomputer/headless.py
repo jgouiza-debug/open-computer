@@ -21,7 +21,6 @@ from .server import ToolError, dispatch, tool_definitions
 
 INPUT_TOOLS = frozenset({"activate", "move", "click", "scroll", "drag", "type_text", "press_key"})
 FALLBACK_CODES = frozenset({"semantic_unavailable", "semantic_incomplete", "semantic_empty"})
-BUNDLED_NATIVE_SHA256 = "3ba321acc65b9f84131c0e615f4817eb5865f4b3ab668c298a5535b29e7a757d"
 
 
 def discover_windows(backend=None) -> list[dict]:
@@ -356,11 +355,21 @@ def _native_provider(path: Path | None):
             raise ValueError("Native helper must be an existing executable")
         return NativeSemanticProvider(candidate)
     if getattr(sys, "frozen", False):
+        # Generated from the actual CI-built helper in the packaging stage only.
+        # Source installs deliberately have no _native_pin module or default helper.
+        try:
+            from ._native_pin import NATIVE_SHA256
+        except (ImportError, SyntaxError) as exc:
+            raise ValueError("Portable bundle is missing a valid native-helper pin; re-extract the complete bundle") from exc
+        if (not isinstance(NATIVE_SHA256, str) or len(NATIVE_SHA256) != 64 or
+                any(char not in "0123456789abcdef" for char in NATIVE_SHA256)):
+            raise ValueError("Portable bundle has a malformed native-helper SHA256 pin")
         candidate = Path(sys.executable).resolve().parent / "optional/opencomputer-native.exe"
-        if candidate.is_file():
-            if hashlib.sha256(candidate.read_bytes()).hexdigest() != BUNDLED_NATIVE_SHA256:
-                raise ValueError("Bundled semantic helper hash differs from the reviewed release")
-            return NativeSemanticProvider(candidate)
+        if not candidate.is_file():
+            raise ValueError("Portable bundle is missing its semantic helper; re-extract the complete bundle")
+        if hashlib.sha256(candidate.read_bytes()).hexdigest() != NATIVE_SHA256:
+            raise ValueError("Bundled semantic helper hash differs from this portable build's pin")
+        return NativeSemanticProvider(candidate)
     return None
 
 

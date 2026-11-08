@@ -37,7 +37,7 @@ if ($LASTEXITCODE -ne 0) { throw "Cannot identify source commit" }
 $sourceChanges = & git -C $repoRoot status --porcelain --untracked-files=all
 if ($LASTEXITCODE -ne 0 -or $sourceChanges) { throw "Build requires a clean committed checkout" }
 $nativeTree = (& git -C $repoRoot rev-parse HEAD:native).Trim()
-if ($LASTEXITCODE -ne 0) { throw "Cannot identify reused native source tree" }
+if ($LASTEXITCODE -ne 0) { throw "Cannot identify current native source tree" }
 $context = @{
     source_commit = $sourceCommit; source_clean = $true; native_tree = $nativeTree
     native_cargo_lock_sha256 = (Get-FileHash -LiteralPath (Join-Path $repoRoot "native/Cargo.lock") -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -52,6 +52,32 @@ $context = @{
 }
 $context | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $contextPath -Encoding utf8NoBOM
 Invoke-CheckedPython $PythonPath @("-B", $support, "stage", "--root", $repoRoot, "--destination", $sourceRoot)
+$stageInfo = Get-Content -LiteralPath (Join-Path $sourceRoot ".opencomputer-build-stage.json") -Raw | ConvertFrom-Json
+$context.native_source_files = @($stageInfo.native_sources)
+$rustToolchain = "1.99.0-x86_64-pc-windows-msvc"
+function Invoke-CheckedRust {
+    param([string[]]$Arguments)
+    & rustup run $rustToolchain @Arguments
+    if ($LASTEXITCODE -ne 0) { throw "Rust step failed with exit code $LASTEXITCODE" }
+}
+$rustVersion = (Invoke-CheckedRust @("rustc", "--version")) -join "`n"
+if ($rustVersion.Trim() -ne "rustc 1.99.0 (b940084d7 2026-09-28)") { throw "Exact reviewed Rust 1.99.0 is required" }
+$context.native_rustc_version = $rustVersion.Trim()
+$context.native_rustc_verbose = (Invoke-CheckedRust @("rustc", "-vV")) -join "`n"
+$context.native_cargo_version = ((Invoke-CheckedRust @("cargo", "--version")) -join "`n").Trim()
+$rustSysroot = ((Invoke-CheckedRust @("rustc", "--print", "sysroot")) -join "`n").Trim()
+$context | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $contextPath -Encoding utf8NoBOM
+# Unit separators avoid shell-quoting ambiguity when remapped paths contain spaces.
+$env:CARGO_ENCODED_RUSTFLAGS = @(
+    "--remap-path-prefix=$sourceRoot=/source", "--remap-path-prefix=$repoRoot=/repository",
+    "--remap-path-prefix=$env:USERPROFILE=/user", "-C", "debuginfo=0", "-C", "strip=symbols",
+    "-C", "link-arg=/PDBALTPATH:opencomputer-native.pdb"
+) -join [char]0x1f
+$env:CARGO_TARGET_DIR = Join-Path $buildRoot "native-target"
+$nativeManifest = Join-Path $sourceRoot "native/Cargo.toml"
+Invoke-CheckedRust @("cargo", "test", "--manifest-path", $nativeManifest, "--locked", "--release", "--target", "x86_64-pc-windows-msvc", "-j", "2")
+Invoke-CheckedRust @("cargo", "build", "--manifest-path", $nativeManifest, "--locked", "--release", "--target", "x86_64-pc-windows-msvc", "-j", "2")
+$nativeExe = Join-Path $env:CARGO_TARGET_DIR "x86_64-pc-windows-msvc/release/opencomputer-native.exe"
 $env:PYTHONPATH = $null
 $env:PYTHONHOME = $null
 $env:PYTHONNOUSERSITE = "1"
@@ -64,12 +90,14 @@ $wheels = Join-Path $artifactDir "private-wheels"
 New-Item -ItemType Directory -Path $wheels | Out-Null
 Invoke-CheckedPython $buildPython @("-P", "-m", "pip", "download", "--only-binary=:all:", "--require-hashes", "--dest", $wheels, "-r", $lock)
 Invoke-CheckedPython $buildPython @("-P", "-m", "pip", "install", "--no-index", "--find-links", $wheels, "--require-hashes", "-r", $lock)
-$native = Join-Path $artifactDir "private-native-v0.1.3.zip"
+$licenseArchive = Join-Path $artifactDir "private-native-v0.1.3-license-input.zip"
 $nativeUrl = "https://github.com/jgouiza-debug/open-computer/releases/download/v0.1.3/opencomputer-native-windows-x64-v0.1.3.zip"
-Invoke-WebRequest -Uri $nativeUrl -OutFile $native
-if ((Get-FileHash -LiteralPath $native -Algorithm SHA256).Hash.ToLowerInvariant() -ne "7d101ac98ab1a2c1cba0ed8a212454e7d39d5e882a49f42c858b4a43eddcd869") {
+Invoke-WebRequest -Uri $nativeUrl -OutFile $licenseArchive
+if ((Get-FileHash -LiteralPath $licenseArchive -Algorithm SHA256).Hash.ToLowerInvariant() -ne "7d101ac98ab1a2c1cba0ed8a212454e7d39d5e882a49f42c858b4a43eddcd869") {
     throw "Published native archive hash differs"
 }
+$native = Join-Path $artifactDir "private-native-current.zip"
+Invoke-CheckedPython $buildPython @("-B", (Join-Path $sourceRoot "packaging/windows/build_support.py"), "prepare-native", "--root", $sourceRoot, "--native-exe", $nativeExe, "--context", $contextPath, "--license-zip", $licenseArchive, "--rust-sysroot", $rustSysroot, "--output", $native)
 $env:OC_PORTABLE_TOC = Join-Path $buildRoot "private-collect-toc.json"
 $dist = Join-Path $buildRoot "dist"
 Push-Location $sourceRoot

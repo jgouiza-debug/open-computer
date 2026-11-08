@@ -2,10 +2,15 @@
 
 import base64
 from contextlib import redirect_stdout
+import hashlib
 import io
 import json
+from pathlib import Path
+import sys
+import tempfile
 import threading
 import time
+from types import ModuleType
 import unittest
 from unittest.mock import patch
 
@@ -391,6 +396,78 @@ class SafetyTests(unittest.TestCase):
         from opencomputer.safety import SafetyHotkey
         with self.assertRaises(RuntimeError):
             SafetyHotkey(lambda: None, poll=lambda: (_ for _ in ()).throw(RuntimeError("failed")))
+
+
+class NativeProviderPinTests(unittest.TestCase):
+    def module(self, value):
+        module = ModuleType("opencomputer._native_pin")
+        module.NATIVE_SHA256 = value
+        return module
+
+    def test_source_default_never_requires_generated_pin_or_starts_helper(self):
+        from opencomputer import headless
+        with patch.object(headless.sys, "frozen", False, create=True), \
+                patch.dict(sys.modules, {"opencomputer._native_pin": None}), \
+                patch.object(headless, "NativeSemanticProvider") as provider:
+            self.assertIsNone(headless._native_provider(None))
+        provider.assert_not_called()
+
+    def test_frozen_default_requires_matching_generated_build_pin(self):
+        from opencomputer import headless
+        with tempfile.TemporaryDirectory(prefix="portable pin café ") as temporary:
+            root = Path(temporary)
+            helper = root / "optional/opencomputer-native.exe"
+            helper.parent.mkdir()
+            helper.write_bytes(b"current CI-built helper fixture")
+            digest = hashlib.sha256(helper.read_bytes()).hexdigest()
+            with patch.object(headless.sys, "frozen", True, create=True), \
+                    patch.object(headless.sys, "executable", str(root / "OpenComputerCLI.exe")), \
+                    patch.dict(sys.modules, {"opencomputer._native_pin": self.module(digest)}), \
+                    patch.object(headless, "NativeSemanticProvider", return_value="provider") as provider:
+                self.assertEqual(headless._native_provider(None), "provider")
+                provider.assert_called_once_with(helper)
+
+    def test_frozen_missing_or_malformed_pin_never_falls_back(self):
+        from opencomputer import headless
+        missing_attribute = ModuleType("opencomputer._native_pin")
+        modules = [None, missing_attribute, *[self.module(value) for value in
+            (None, True, 123, "", "a" * 63, "A" * 64, "z" * 64, "a" * 64 + "\n")]]
+        for module in modules:
+            with self.subTest(module=module), \
+                    patch.object(headless.sys, "frozen", True, create=True), \
+                    patch.dict(sys.modules, {"opencomputer._native_pin": module}), \
+                    patch.object(headless, "NativeSemanticProvider") as provider:
+                with self.assertRaises(ValueError):
+                    headless._native_provider(None)
+                provider.assert_not_called()
+
+    def test_frozen_missing_or_changed_helper_is_rejected_before_provider_creation(self):
+        from opencomputer import headless
+        with tempfile.TemporaryDirectory(prefix="portable helper ") as temporary:
+            root = Path(temporary)
+            helper = root / "optional/opencomputer-native.exe"
+            helper.parent.mkdir()
+            with patch.object(headless.sys, "frozen", True, create=True), \
+                    patch.object(headless.sys, "executable", str(root / "OpenComputerCLI.exe")), \
+                    patch.dict(sys.modules, {"opencomputer._native_pin": self.module("0" * 64)}), \
+                    patch.object(headless, "NativeSemanticProvider") as provider:
+                for present in (False, True):
+                    if present:
+                        helper.write_bytes(b"different helper")
+                    with self.subTest(present=present), self.assertRaises(ValueError):
+                        headless._native_provider(None)
+                provider.assert_not_called()
+
+    def test_explicit_helper_choice_bypasses_build_pin_even_when_frozen(self):
+        from opencomputer import headless
+        with tempfile.TemporaryDirectory(prefix="explicit helper ") as temporary:
+            helper = Path(temporary) / "chosen.exe"
+            helper.write_bytes(b"user-selected helper fixture")
+            with patch.object(headless.sys, "frozen", True, create=True), \
+                    patch.dict(sys.modules, {"opencomputer._native_pin": None}), \
+                    patch.object(headless, "NativeSemanticProvider", return_value="chosen") as provider:
+                self.assertEqual(headless._native_provider(helper), "chosen")
+                provider.assert_called_once_with(helper)
 
 
 if __name__ == "__main__":
