@@ -31,6 +31,13 @@ def validate_native_helper(path: str | Path) -> Path:
 def build_mcp_config(python_executable: str | Path | None = None,
                      package_root: str | Path | None = None) -> dict:
     """Return generic/Unsloth import JSON, without credentials or cwd assumptions."""
+    if getattr(sys, "frozen", False) and python_executable is None:
+        console = Path(sys.executable).resolve().parent / "OpenComputerCLI.exe"
+        if not console.is_file():
+            raise ValueError("Portable bundle is missing sibling OpenComputerCLI.exe; re-extract the complete bundle")
+        return {"mcpServers": {"open-computer": {
+            "command": str(console), "args": ["mcp"], "env": {},
+        }}}
     executable = Path(python_executable or sys.executable).expanduser().resolve()
     if not executable.is_file():
         raise ValueError("Python executable does not exist")

@@ -67,6 +67,69 @@ class SetupTests(unittest.TestCase):
             config = setup.build_mcp_config(windowed)
             self.assertEqual(config["mcpServers"]["open-computer"]["command"], str(console.resolve()))
 
+    def test_frozen_gui_and_cli_use_only_the_sibling_console_without_source_files(self):
+        with tempfile.TemporaryDirectory(prefix="portable café ") as temporary:
+            root = Path(temporary)
+            bundle = root / "Bundle With Spaces"
+            bundle.mkdir()
+            gui, console = bundle / "OpenComputer.exe", bundle / "OpenComputerCLI.exe"
+            gui.touch()
+            console.touch()
+            decoy = root / "not-the-bundle"
+            decoy.mkdir()
+            (decoy / "OpenComputerCLI.exe").touch()
+            for executable in (gui, console):
+                with patch.object(setup.sys, "frozen", True, create=True), \
+                        patch.object(setup.sys, "executable", str(executable)), \
+                        patch.object(setup.sys, "_MEIPASS", str(decoy), create=True), \
+                        patch.object(setup, "__file__", str(decoy / "missing" / "setup.py")):
+                    config = setup.build_mcp_config(package_root=decoy / "missing-source")
+                self.assertEqual(config, {"mcpServers": {"open-computer": {
+                    "command": str(console.resolve()), "args": ["mcp"], "env": {}}}})
+                self.assertNotIn("PYTHONPATH", json.dumps(config))
+
+    def test_frozen_missing_sibling_fails_without_source_or_extraction_fallback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundle, extraction = root / "bundle", root / "extraction"
+            bundle.mkdir()
+            extraction.mkdir()
+            (extraction / "OpenComputerCLI.exe").touch()
+            with patch.object(setup.sys, "frozen", True, create=True), \
+                    patch.object(setup.sys, "executable", str(bundle / "OpenComputer.exe")), \
+                    patch.object(setup.sys, "_MEIPASS", str(extraction), create=True):
+                with self.assertRaisesRegex(ValueError, "sibling OpenComputerCLI.exe"):
+                    setup.build_mcp_config()
+
+    def test_explicit_python_override_keeps_source_contract_even_when_frozen(self):
+        source_python = Path(sys.executable).resolve()
+        source_root = Path(setup.__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            gui, console = root / "OpenComputer.exe", root / "OpenComputerCLI.exe"
+            gui.touch()
+            console.touch()
+            with patch.object(setup.sys, "frozen", True, create=True), patch.object(setup.sys, "executable", str(gui)):
+                config = setup.build_mcp_config(source_python, source_root)
+                with self.assertRaisesRegex(ValueError, "Python executable"):
+                    setup.build_mcp_config(root / "missing-python.exe", source_root)
+                with self.assertRaisesRegex(ValueError, "Package root"):
+                    setup.build_mcp_config(source_python, root / "missing-source")
+            server = config["mcpServers"]["open-computer"]
+            self.assertEqual(server["command"], str(source_python))
+            self.assertEqual(server["args"], ["-P", "-m", "opencomputer.mcp"])
+            self.assertEqual(server["env"], {"PYTHONPATH": str(source_root)})
+
+    def test_panel_default_delegates_to_the_shared_frozen_config(self):
+        from opencomputer.app import panel_mcp_config
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            console = root / "OpenComputerCLI.exe"
+            console.touch()
+            with patch.object(setup.sys, "frozen", True, create=True), \
+                    patch.object(setup.sys, "executable", str(root / "OpenComputer.exe")):
+                self.assertEqual(json.loads(panel_mcp_config()), setup.build_mcp_config())
+
     def test_config_exports_utf8_and_requires_explicit_overwrite(self):
         with tempfile.TemporaryDirectory(prefix="MCP café ") as temporary:
             interpreter = Path(temporary) / "Python café.exe"

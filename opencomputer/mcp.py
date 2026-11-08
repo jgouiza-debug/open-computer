@@ -254,13 +254,13 @@ def serve_stdio(client: LocalClient | ConnectionFileClient, source: TextIO = sys
             sink.flush()
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     for stream in (sys.stdin, sys.stdout):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--connection", type=Path, default=DEFAULT_CONNECTION_PATH)
-    options = parser.parse_args()
+    options = parser.parse_args(argv)
     try:
         client = ConnectionFileClient(options.connection)
         serve_stdio(client)

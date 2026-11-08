@@ -27,13 +27,10 @@ RED = "#ff7185"
 
 def panel_mcp_config(python_executable: str | Path | None = None,
                      package_root: str | Path | None = None) -> str:
-    """Build credential-free wiring; stdio must use python.exe, never pythonw."""
+    """Use the shared source/frozen config contract without duplicating detection."""
     from .setup import build_mcp_config
 
-    executable = Path(python_executable or sys.executable)
-    if executable.name.casefold() == "pythonw.exe":
-        executable = executable.with_name("python.exe")
-    return json.dumps(build_mcp_config(executable, package_root), indent=2)
+    return json.dumps(build_mcp_config(python_executable, package_root), indent=2)
 
 
 def event_description(event: dict[str, Any]) -> str:
