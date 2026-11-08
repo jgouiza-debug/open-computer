@@ -1,8 +1,9 @@
 # Windows portable preview
 
 The portable build packages the desktop panel, MCP bridge, Python, Tk, and Pillow
-in one folder for Windows 10 or newer, x64. You supply the model and model
-client separately.
+in one folder for Windows 10 or newer, x64. You supply and run the model server
+separately. For MCP use, configure your chosen MCP client; the bundle also
+includes a standalone model runner through `OpenComputerCLI.exe run`.
 
 ## Start the panel
 
