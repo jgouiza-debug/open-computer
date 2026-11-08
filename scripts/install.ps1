@@ -13,7 +13,7 @@ function Assert-Success([string]$Description) {
     }
 }
 
-if ($env:OS -ne "Windows_NT") {
+if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
     throw "Open Computer's native app requires Windows."
 }
 
