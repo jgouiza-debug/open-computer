@@ -16,7 +16,7 @@ impl Apartment {
         // SAFETY: this reader owns its thread and matches COM cleanup with RAII.
         unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
             .ok()
-            .map_err(|_| unavailable())?;
+            .map_err(|error| provider_error("com.initialize", error))?;
         Ok(Self)
     }
 }
@@ -35,10 +35,20 @@ impl Drop for Variant {
         }
     }
 }
-fn unavailable() -> Error {
+fn unavailable(stage: &'static str, reason: &'static str) -> Error {
     Error::new(
         "accessibility_unavailable",
-        "Accessibility provider is unavailable",
+        format!("Accessibility provider is unavailable; stage={stage}; reason={reason}"),
+    )
+}
+fn provider_error(stage: &'static str, error: windows::core::Error) -> Error {
+    // Never format the OS/provider message: it can contain untrusted UI text.
+    Error::new(
+        "accessibility_unavailable",
+        format!(
+            "Accessibility provider is unavailable; stage={stage}; hresult=0x{:08X}",
+            error.code().0 as u32
+        ),
     )
 }
 
@@ -113,23 +123,78 @@ fn role(id: i32) -> String {
     }
     .into()
 }
-fn cached_bool(element: &IUIAutomationElement, property: UIA_PROPERTY_ID) -> Option<bool> {
-    // Typed getters can substitute false for unsupported. Accept only an actual
-    // no-default VT_BOOL so an unknown password flag always fails closed.
+fn decode_bool(value: &VARIANT) -> (Option<bool>, u16) {
+    // SAFETY: inspect the discriminator before accessing the VARIANT_BOOL arm.
     unsafe {
-        let value = Variant(element.GetCachedPropertyValueEx(property, true).ok()?);
-        let data = &value.0.Anonymous.Anonymous;
-        if data.vt != VT_BOOL {
-            return None;
-        }
-        Some(data.Anonymous.boolVal.0 != 0)
+        let data = &value.Anonymous.Anonymous;
+        let result = (data.vt == VT_BOOL).then(|| data.Anonymous.boolVal.0 != 0);
+        (result, data.vt.0)
+    }
+}
+fn ignore_default_value(property: UIA_PROPERTY_ID) -> bool {
+    // UIA supplies documented framework defaults for these nonprivacy properties.
+    // https://learn.microsoft.com/windows/win32/winauto/uiauto-automation-element-propids
+    // Password and every unreviewed property always require an explicit value.
+    ![
+        UIA_IsOffscreenPropertyId,
+        UIA_IsEnabledPropertyId,
+        UIA_IsKeyboardFocusablePropertyId,
+    ]
+    .contains(&property)
+}
+fn cached_bool_detail(
+    element: &IUIAutomationElement,
+    property: UIA_PROPERTY_ID,
+) -> windows::core::Result<Option<bool>> {
+    // The password path suppresses defaults: unknown never authorizes text reads.
+    unsafe {
+        let value = Variant(element.GetCachedPropertyValueEx(property, true)?);
+        Ok(decode_bool(&value.0).0)
+    }
+}
+fn cached_bool(element: &IUIAutomationElement, property: UIA_PROPERTY_ID) -> Option<bool> {
+    cached_bool_detail(element, property).ok().flatten()
+}
+fn required_bool_result(
+    result: windows::core::Result<VARIANT>,
+    stage: &'static str,
+    depth: usize,
+) -> Result<bool> {
+    let value = Variant(result.map_err(|error| {
+        let mut error = provider_error(stage, error);
+        error.message.push_str(&format!("; depth={depth}"));
+        error
+    })?);
+    let (value, variant_type) = decode_bool(&value.0);
+    required_bool(value, stage).map_err(|mut error| {
+        // Only numeric VARIANT type/depth, never provider values or text.
+        error
+            .message
+            .push_str(&format!("; vt={variant_type}; depth={depth}"));
+        error
+    })
+}
+fn required_property_bool(
+    element: &IUIAutomationElement,
+    property: UIA_PROPERTY_ID,
+    stage: &'static str,
+    depth: usize,
+) -> Result<bool> {
+    // FALSE asks UIA for its own default, not an invented client-side false.
+    // A failed HRESULT or non-VT_BOOL still rejects the observation.
+    unsafe {
+        required_bool_result(
+            element.GetCachedPropertyValueEx(property, ignore_default_value(property)),
+            stage,
+            depth,
+        )
     }
 }
 fn text_allowed(password: Option<bool>) -> bool {
     password == Some(false)
 }
-fn required_bool(value: Option<bool>) -> Result<bool> {
-    value.ok_or_else(unavailable)
+fn required_bool(value: Option<bool>, stage: &'static str) -> Result<bool> {
+    value.ok_or_else(|| unavailable(stage, "unsupported_bool"))
 }
 fn confirmed_password(flags: [Option<bool>; 3]) -> Option<bool> {
     if flags.contains(&Some(true)) {
@@ -147,7 +212,9 @@ fn truncate_utf16(value: &[u16], allowance: usize) -> (String, bool) {
     (text, chars.next().is_some())
 }
 fn walk_result<T>(status: windows::core::HRESULT, element: Option<T>) -> Result<Option<T>> {
-    status.ok().map_err(|_| unavailable())?;
+    status
+        .ok()
+        .map_err(|error| provider_error("walk.result", error))?;
     Ok(element)
 }
 fn walk(
@@ -174,7 +241,16 @@ fn walk(
         );
         // Only a successful COM return transfers an owned reference. Do not
         // construct or release an out-pointer from a failed provider call.
-        status.ok().map_err(|_| unavailable())?;
+        status.ok().map_err(|error| {
+            provider_error(
+                if first {
+                    "walk.first_child"
+                } else {
+                    "walk.next_sibling"
+                },
+                error,
+            )
+        })?;
         let found = if pointer.is_null() {
             None
         } else {
@@ -240,14 +316,14 @@ impl Traversal {
         unsafe {
             let text = element
                 .BuildUpdatedCache(&self.text)
-                .map_err(|_| unavailable())?;
+                .map_err(|error| provider_error("text.refresh", error))?;
             let text_password = cached_bool(&text, UIA_IsPasswordPropertyId);
             let post_password = if text_allowed(text_password)
                 && self.started.elapsed() < Duration::from_millis(1500)
             {
                 let post = element
                     .BuildUpdatedCache(&self.structural)
-                    .map_err(|_| unavailable())?;
+                    .map_err(|error| provider_error("text.password_refresh", error))?;
                 cached_bool(&post, UIA_IsPasswordPropertyId)
             } else {
                 if self.started.elapsed() >= Duration::from_millis(1500) {
@@ -282,17 +358,26 @@ impl Traversal {
         }
         self.visited += 1;
         unsafe {
-            let offscreen = required_bool(cached_bool(&element, UIA_IsOffscreenPropertyId))?;
+            let offscreen = required_property_bool(
+                &element,
+                UIA_IsOffscreenPropertyId,
+                if depth == 0 {
+                    "root.offscreen"
+                } else {
+                    "node.offscreen"
+                },
+                depth,
+            )?;
             let bounds = element
                 .CachedBoundingRectangle()
-                .map_err(|_| unavailable())?;
+                .map_err(|error| provider_error("node.bounds", error))?;
             let bounds = clip(bounds, &self.window.rect);
             let mut password = cached_bool(&element, UIA_IsPasswordPropertyId);
             let policy = walk_policy(offscreen, bounds.is_some(), password);
             // A missing/hidden root cannot produce the canonical single-root
             // snapshot; return unavailable so the caller can use image fallback.
             if depth == 0 && !policy.emit {
-                return Err(unavailable());
+                return Err(unavailable("root.visibility", "root_not_visible"));
             }
             let mut nearest_parent = parent.clone();
             if policy.emit {
@@ -300,15 +385,27 @@ impl Traversal {
                 let mut node = Node {
                     id: id.clone(),
                     parent,
-                    role: role(element.CachedControlType().map_err(|_| unavailable())?.0),
+                    role: role(
+                        element
+                            .CachedControlType()
+                            .map_err(|error| provider_error("node.control_type", error))?
+                            .0,
+                    ),
                     name: None,
                     value: None,
-                    bounds: bounds.ok_or_else(unavailable)?,
-                    enabled: required_bool(cached_bool(&element, UIA_IsEnabledPropertyId))?,
-                    focusable: required_bool(cached_bool(
+                    bounds: bounds.ok_or_else(|| unavailable("node.bounds", "missing_bounds"))?,
+                    enabled: required_property_bool(
+                        &element,
+                        UIA_IsEnabledPropertyId,
+                        "node.enabled",
+                        depth,
+                    )?,
+                    focusable: required_property_bool(
                         &element,
                         UIA_IsKeyboardFocusablePropertyId,
-                    ))?,
+                        "node.focusable",
+                        depth,
+                    )?,
                     password,
                 };
                 self.populate_text(&element, &mut node)?;
@@ -321,7 +418,7 @@ impl Traversal {
                 // fetch their Name/Value or any protected subtree.
                 let post = element
                     .BuildUpdatedCache(&self.structural)
-                    .map_err(|_| unavailable())?;
+                    .map_err(|error| provider_error("container.password_refresh", error))?;
                 password = confirmed_password([
                     password,
                     password,
@@ -362,15 +459,19 @@ pub fn inspect(target: &Target) -> Result<serde_json::Value> {
     unsafe {
         let automation: IUIAutomation =
             CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER)
-                .map_err(|_| unavailable())?;
+                .map_err(|error| provider_error("automation.create", error))?;
         if let Ok(v2) = automation.cast::<IUIAutomation2>() {
-            v2.SetConnectionTimeout(500).map_err(|_| unavailable())?;
-            v2.SetTransactionTimeout(500).map_err(|_| unavailable())?;
+            v2.SetConnectionTimeout(500)
+                .map_err(|error| provider_error("automation.connection_timeout", error))?;
+            v2.SetTransactionTimeout(500)
+                .map_err(|error| provider_error("automation.transaction_timeout", error))?;
         }
-        let structural = automation.CreateCacheRequest().map_err(|_| unavailable())?;
+        let structural = automation
+            .CreateCacheRequest()
+            .map_err(|error| provider_error("cache.structural.create", error))?;
         structural
             .SetTreeScope(TreeScope_Element)
-            .map_err(|_| unavailable())?;
+            .map_err(|error| provider_error("cache.structural.scope", error))?;
         for property in [
             UIA_IsPasswordPropertyId,
             UIA_ControlTypePropertyId,
@@ -381,23 +482,27 @@ pub fn inspect(target: &Target) -> Result<serde_json::Value> {
         ] {
             structural
                 .AddProperty(property)
-                .map_err(|_| unavailable())?;
+                .map_err(|error| provider_error("cache.structural.property", error))?;
         }
-        let text = automation.CreateCacheRequest().map_err(|_| unavailable())?;
+        let text = automation
+            .CreateCacheRequest()
+            .map_err(|error| provider_error("cache.text.create", error))?;
         text.SetTreeScope(TreeScope_Element)
-            .map_err(|_| unavailable())?;
+            .map_err(|error| provider_error("cache.text.scope", error))?;
         text.AddProperty(UIA_NamePropertyId)
-            .map_err(|_| unavailable())?;
+            .map_err(|error| provider_error("cache.text.name", error))?;
         text.AddProperty(UIA_IsPasswordPropertyId)
-            .map_err(|_| unavailable())?;
+            .map_err(|error| provider_error("cache.text.password", error))?;
         text.AddProperty(UIA_ValueValuePropertyId)
-            .map_err(|_| unavailable())?;
+            .map_err(|error| provider_error("cache.text.value", error))?;
         text.AddPattern(UIA_ValuePatternId)
-            .map_err(|_| unavailable())?;
+            .map_err(|error| provider_error("cache.text.pattern", error))?;
         let root = automation
             .ElementFromHandleBuildCache(window::hwnd(target)?, &structural)
-            .map_err(|_| unavailable())?;
-        let walker = automation.ControlViewWalker().map_err(|_| unavailable())?;
+            .map_err(|error| provider_error("root.element", error))?;
+        let walker = automation
+            .ControlViewWalker()
+            .map_err(|error| provider_error("walker.control_view", error))?;
         let mut traversal = Traversal {
             window: window.clone(),
             walker,
@@ -411,7 +516,7 @@ pub fn inspect(target: &Target) -> Result<serde_json::Value> {
         };
         traversal.visit(root, None, 0)?;
         if traversal.nodes.is_empty() {
-            return Err(unavailable());
+            return Err(unavailable("tree.result", "empty_tree"));
         }
         let after = window::inspect(target)?;
         if !window::same_target(&window, &after) {
@@ -436,6 +541,82 @@ pub fn inspect(target: &Target) -> Result<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_reviewed_nonprivacy_bools_accept_framework_defaults() {
+        for property in [
+            UIA_IsOffscreenPropertyId,
+            UIA_IsEnabledPropertyId,
+            UIA_IsKeyboardFocusablePropertyId,
+        ] {
+            assert!(!ignore_default_value(property));
+        }
+        assert!(ignore_default_value(UIA_IsPasswordPropertyId));
+        assert!(ignore_default_value(UIA_HasKeyboardFocusPropertyId));
+    }
+
+    #[test]
+    fn required_bool_decoding_preserves_values_and_rejects_types_and_hresult() {
+        assert!(required_bool_result(Ok(VARIANT::from(true)), "node.offscreen", 2).unwrap());
+        assert!(!required_bool_result(Ok(VARIANT::from(false)), "node.offscreen", 2).unwrap());
+        let invalid = required_bool_result(Ok(VARIANT::from(0i32)), "node.offscreen", 2)
+            .expect_err("integer zero is not a boolean default");
+        assert_eq!(invalid.code, "accessibility_unavailable");
+        assert!(
+            invalid
+                .message
+                .ends_with("reason=unsupported_bool; vt=3; depth=2")
+        );
+        let empty = required_bool_result(Ok(VARIANT::default()), "node.offscreen", 3)
+            .expect_err("empty is not false");
+        assert!(
+            empty
+                .message
+                .ends_with("reason=unsupported_bool; vt=0; depth=3")
+        );
+        let failed = required_bool_result(
+            Err(windows::core::Error::new(
+                windows::core::HRESULT(0x80004005u32 as i32),
+                "PRIVATE_PROVIDER_CONTENT",
+            )),
+            "node.offscreen",
+            4,
+        )
+        .expect_err("failed call cannot supply a default");
+        assert!(failed.message.ends_with("hresult=0x80004005; depth=4"));
+        assert!(!failed.message.contains("PRIVATE_PROVIDER_CONTENT"));
+    }
+
+    #[test]
+    fn diagnostics_include_only_fixed_stage_and_numeric_hresult() {
+        let error = windows::core::Error::new(
+            windows::core::HRESULT(0x80004005u32 as i32),
+            "PRIVATE_UI_VALUE_DO_NOT_LOG",
+        );
+        let result = provider_error("root.element", error);
+        assert_eq!(result.code, "accessibility_unavailable");
+        assert!(!result.retryable);
+        assert_eq!(
+            result.message,
+            "Accessibility provider is unavailable; stage=root.element; hresult=0x80004005"
+        );
+        assert!(!result.message.contains("PRIVATE_UI"));
+    }
+
+    #[test]
+    fn unsupported_bool_and_root_policy_are_distinct_fixed_reasons() {
+        let unsupported = required_bool(None, "node.focusable").expect_err("unsupported");
+        let root = unavailable("root.visibility", "root_not_visible");
+        assert_eq!(unsupported.code, root.code);
+        assert_eq!(
+            unsupported.message,
+            "Accessibility provider is unavailable; stage=node.focusable; reason=unsupported_bool"
+        );
+        assert_eq!(
+            root.message,
+            "Accessibility provider is unavailable; stage=root.visibility; reason=root_not_visible"
+        );
+    }
     #[test]
     fn password_and_unknown_never_allow_text() {
         assert!(!text_allowed(Some(true)));
@@ -491,8 +672,8 @@ mod tests {
     }
     #[test]
     fn required_structure_errors_are_not_policy_omissions() {
-        assert!(required_bool(None).is_err());
-        assert!(!required_bool(Some(false)).expect("known"));
+        assert!(required_bool(None, "test.bool").is_err());
+        assert!(!required_bool(Some(false), "test.bool").expect("known"));
     }
     #[test]
     fn changed_or_unknown_password_discards_text_authority() {
