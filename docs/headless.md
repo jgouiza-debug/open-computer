@@ -1,10 +1,22 @@
 # Headless agent skill
 
-The v0.1.6 candidate adds a Windows skill and a headless console runtime. It
-requires a new headless-capable binary; the published v0.1.5 portable archive
-does not contain this command. Publication and actual packaged-install validation
-remain release gates. The panel-based workflow continues to use its existing
-MCP configuration.
+The primary workflow is an installable Windows agent skill backed by a headless
+console runtime. No Open Computer panel or wizard is required. The host acts on
+the user's desktop task and may bring its target application into the foreground.
+
+**v0.1.6 is still a candidate; its release assets are not published.** The
+downloaded package from commit `469b26d` passed clean PowerShell 5 and PowerShell 7
+installs under long/Unicode paths, frozen help/headless-help/offline doctor checks,
+and a no-GUI portable smoke test. The latter discovered 13 tools and made
+read-only calls against an isolated fake controller through the legacy MCP
+bridge. It did not perform a real desktop task. This is evidence for that exact
+candidate, not a validation of subsequent rebuilds or arbitrary applications.
+The [candidate build](https://github.com/jgouiza-debug/open-computer/actions/runs/42487776432)
+records its source and packaging run.
+
+The published v0.1.5 portable archive does not contain the headless command. Its
+optional panel workflow uses separate [setup instructions](portable.md) and MCP
+configuration. Do not use its older assets to install this skill.
 
 ## Install without Python or Rust
 
@@ -21,10 +33,11 @@ The release build produces these candidate assets:
 - `install-skill-command.txt`: one PowerShell command containing the exact
   installer and archive hashes for that release.
 
-After those assets are published and verified, the command downloads the
+Once those assets are published and verified, the command downloads the
 installer, verifies its pinned hash before execution, and installs the pinned
 skill archive. It does not start a desktop task or register a global MCP server.
-Do not replace its hashes with values from an unrelated release.
+Do not replace its hashes with values from an unrelated release. The generated
+candidate command's public download URLs are not usable before publication.
 
 For an already extracted headless-capable portable folder, run its installer:
 
@@ -43,7 +56,9 @@ The default destination is `CODEX_HOME/skills/open-computer`, or
 another host's absolute skills directory. The installer does not change that
 host's configuration. It verifies the manifest inventory and runs only console
 help and offline dependency checks. The receipt records versions and manifest
-hashes; no target or model is contacted during installation.
+hashes; no target or model is contacted during installation. Read that UTF-8
+receipt when checking a Unicode install location: redirected PowerShell console
+output can use a legacy encoding and lose characters in its printed path.
 
 An existing directory is preserved unless `-Upgrade` is explicit and the
 installation is managed, unchanged, and inactive. Local edits and additional
@@ -96,8 +111,10 @@ when only text reaches the model. Inspect actual results after actions: a
 successful tool dispatch or model final message alone is not task-success proof.
 The direct runner reports `task_completion_verified:false` for this reason.
 
-No universal host, model or application compatibility is claimed. Installer
-boundary tests use inert files and a fake verifier; they are separate from an
-actual frozen-runtime install and real-application task measurements. Keep model
+No universal host, model or application compatibility is claimed. Both fake
+installer boundary tests and actual packaged installation have passed for the
+candidate identified above. Neither establishes real-application task accuracy
+or model performance. That validation used no GUI, model, desktop input or
+native-helper protocol calls and was not a fresh-Windows VM test. Keep model
 load, task latency, token usage and success/failure evidence separate when
 evaluating this workflow.

@@ -2,30 +2,77 @@
 
 [![Windows tests](https://github.com/jgouiza-debug/open-computer/actions/workflows/tests.yml/badge.svg)](https://github.com/jgouiza-debug/open-computer/actions/workflows/tests.yml)
 
-[Download a Windows preview](https://github.com/jgouiza-debug/open-computer/releases) · [Ask a question or share feedback](https://github.com/jgouiza-debug/open-computer/discussions)
+[Headless setup](docs/headless.md) · [Ask a question or share feedback](https://github.com/jgouiza-debug/open-computer/discussions)
 
-An independent, MIT-licensed Windows computer-use toolkit for local and
-open-source AI models. A desktop panel lets you choose a window and arm control;
-the model observes control text or screenshots and uses mouse and keyboard tools. A blue outline
-and AI cursor make activity visible.
+An independent, MIT-licensed Windows computer-use skill for agents. The primary
+workflow uses a headless console runtime: no Open Computer panel, install wizard,
+or global Python/Rust installation is required. The agent host binds one Windows
+application to the user's task, observes control text or screenshots, and issues
+mouse and keyboard actions within that session. Target applications can be
+visible and activated normally.
 
 This is an early implementation, not a drop-in replacement for Codex's private
 runtime. It follows the same **observe → one action → observe again** workflow.
 
-![Open Computer panel in demo mode](docs/demo-panel.png)
+**Release status:** v0.1.6 is a candidate, not a published release. Its downloaded
+package from commit `469b26d` passed clean PowerShell 5 and PowerShell 7 installs,
+including long/Unicode paths and offline CLI checks. This validates that
+candidate's installation; later binaries and real-application task behavior
+require their own checks. The published v0.1.5 assets provide the older optional
+panel workflow and do not contain the headless command.
 
 
-## Install and run
+## Headless agent skill
 
-### Headless agent skill
+Use a reviewed headless-capable candidate, or the new skill release when it is
+published. The [installation guide](docs/headless.md) covers a local candidate
+install and the hash-pinned online bootstrap. Candidate bootstrap commands refer
+to future release assets and will work only after those assets are published.
 
-The v0.1.6 candidate adds a skill that uses a fixed-target console session
-without the Open Computer panel or a global Python/Rust installation. A host
-with persistent stdio can use MCP directly; a shell-only host can delegate to
-an already-running local model with `headless run`. These are distinct modes.
-See [headless installation and host requirements](docs/headless.md). The
-published v0.1.5 archive does not contain the new headless command; a new
-packaged release and its validation are required before using the skill assets.
+The skill includes the portable Windows 10+ x64 runtime and its component
+licenses. Installation verifies the payload and runs offline checks; it does
+not start a model, open a panel, authorize input or change global MCP settings.
+Models and the agent host are supplied separately.
+
+Choose the route supported by the host:
+
+- **Task-local MCP:** a host with persistent stdin/stdout sessions retains one
+  `headless serve` process. Its own model uses the tools. The host must keep
+  stdin open and disable automatic restart after stop or exit.
+- **Shell-only delegation:** `headless run` sends the task to an already-running
+  compatible local model. This does not expose tools to the host's own model or
+  load a model server. It is a separate execution route.
+
+Read the installed [skill](skills/open-computer/SKILL.md) and
+[host workflow examples](skills/open-computer/references/hosts.md). A static
+global MCP entry cannot replace the task-local process lifecycle.
+
+```text
+OpenComputerCLI.exe headless windows
+OpenComputerCLI.exe headless serve --window-id HWND --pid PID --process-start FILETIME --allow-input --ttl 600
+```
+
+The host derives the application from the user's request and copies its actual
+identity from discovery. Input requires the process-start identity and explicit
+`--allow-input`; omitting that flag keeps the session read-only. No additional
+panel interaction or mandatory confirmation is part of this workflow. The
+target is fixed at launch: MCP cannot arm, retarget or reset the grant.
+Ctrl+Alt+Esc, stop, EOF, expiry and the action budget end the session.
+
+Auto observation prefers compact accessibility text and falls back to images
+for expected missing or incomplete control information. Text-only models need
+enough control information to complete the task; image fallback requires vision.
+Use **observe → one action → observe again**, and check actual application state
+before reporting success. Host, model and application compatibility are bounded
+by the tested configuration; no general performance gain is promised.
+
+## Legacy optional panel workflow
+
+The following workflow uses the earlier desktop panel and its separate MCP
+bridge. It remains available for users who choose it; it is not required by the
+headless skill. The blue outline and AI cursor belong to this panel workflow.
+
+![Legacy optional Open Computer panel in demo mode](docs/demo-panel.png)
 
 ### Portable Windows preview
 
@@ -92,7 +139,7 @@ The helper starts only on the first semantic request. Selecting this launcher
 does not arm input or start a model. Manual paths, runner modes, and validation
 limits are described in [the semantic observation guide](docs/semantic.md).
 
-## Components
+### Legacy panel components
 
 ```mermaid
 flowchart LR
@@ -113,11 +160,11 @@ flowchart LR
 - **Model adapter:** a bounded tool loop for an already-running OpenAI-compatible
   local vision model endpoint. No model downloads or model restarts.
 
-Give your model the workflow in [docs/SKILL.md](docs/SKILL.md). Native coordinate
+The panel-specific workflow is in [docs/SKILL.md](docs/SKILL.md). Native coordinate
 tools require a model that can interpret screenshots and call tools reliably.
 The toolkit does not make a text-only model see.
 
-## Connect an agent
+### Legacy panel MCP connection
 
 Start the desktop panel and keep it disarmed. Click **Copy MCP config**, or
 generate a configuration file using this installation's absolute paths:
@@ -164,9 +211,14 @@ while disarmed, use the MCP read-only tools directly.
 The runner does not load models, start model servers, or arm control. Model and
 server compatibility must be tested for the specific setup you choose.
 
-## Speed and token efficiency
+## Measurements and validation
 
-The example runner defaults to compact prompts, the latest screenshot, and a
+The following measurements concern earlier bounded fixtures and the example
+runner. They do not establish a speedup or task-success rate for the new
+headless skill in arbitrary applications. Candidate installation and offline
+CLI/MCP checks are separate from real-application and model-task validation.
+
+The legacy example runner defaults to compact prompts, the latest screenshot, and a
 short history of complete action/result pairs. Its model image is limited to
 1280 pixels on the longest edge. Coordinates are converted back to native pixels
 in code; the full-resolution image remains the source for action validation.
@@ -220,8 +272,9 @@ for limits, password redaction, timeouts, and action-authority boundaries.
 
 Compact control text is intended to reduce model input for ordinary Windows
 controls. Canvas content and incomplete accessibility trees still need images.
-The model runner can use it with `--observation-mode semantic` or `auto`;
-image mode remains the default. One live read-only fixture comparison used 630
+The legacy panel-based model runner can use it with `--observation-mode semantic`
+or `auto`; that runner defaults to images. The headless runner defaults to auto.
+One live read-only fixture comparison used 630
 prompt tokens for control text versus 720 for the image, with all four answers
 correct. See [the timing and cache limitations](docs/performance.md#measured-semantic-versus-image-input);
 this is not a general Rust speedup or an autonomous input-task result.
@@ -280,15 +333,16 @@ fixture/model run, not arbitrary desktop reliability.
 ## Current boundaries
 
 Windows only. Coordinates refer to the captured client area of the selected
-window. Screenshot-based coordinate control comes first; accessibility
-trees, DOM browser tools, occluded-window capture, and other operating systems
-are future work. Windows input is shared with the user and is not an atomic
+window. Accessibility text and per-window screenshots provide observations;
+coverage varies with the application. DOM browser tools and other operating
+systems are not implied. Windows input is shared with the user and is not an atomic
 per-window transaction. Foreground, geometry, and occlusion checks reduce risk,
 but do not establish a security sandbox. Use a separate desktop/VM for untrusted
 agents, and avoid interacting with the target during an automated action.
 
-The bearer token grants access to screen content and permitted tools; keep it
-private. The service binds to loopback and rejects browser-origin requests.
+The legacy panel service uses a bearer token, binds to loopback and rejects
+browser-origin requests. Keep its token private. Headless sessions use in-process
+stdio without that service or its shared connection file.
 Screenshots may contain private information: the agent and model endpoint you
 choose receive those images.
 
