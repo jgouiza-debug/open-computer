@@ -425,7 +425,7 @@ class NativeProviderPinTests(unittest.TestCase):
                     patch.dict(sys.modules, {"opencomputer._native_pin": self.module(digest)}), \
                     patch.object(headless, "NativeSemanticProvider", return_value="provider") as provider:
                 self.assertEqual(headless._native_provider(None), "provider")
-                provider.assert_called_once_with(helper)
+                provider.assert_called_once_with(helper.resolve())
 
     def test_frozen_missing_or_malformed_pin_never_falls_back(self):
         from opencomputer import headless
@@ -467,7 +467,7 @@ class NativeProviderPinTests(unittest.TestCase):
                     patch.dict(sys.modules, {"opencomputer._native_pin": None}), \
                     patch.object(headless, "NativeSemanticProvider", return_value="chosen") as provider:
                 self.assertEqual(headless._native_provider(helper), "chosen")
-                provider.assert_called_once_with(helper)
+                provider.assert_called_once_with(helper.resolve())
 
 
 if __name__ == "__main__":

@@ -57,3 +57,14 @@ with one environment skip.
 See the [sanitized validation receipt](outline-validation.json), including the
 tested source hashes. This is native source-runtime evidence, not a packaged
 runtime check or a claim about model task latency or arbitrary apps.
+
+The subsequent [Windows candidate build](https://github.com/jgouiza-debug/open-computer/actions/runs/42496841204)
+passed for source commit `94c3281`. All 202 downloaded manifest files matched
+their hashes and sizes. The frozen CLI runtime then passed a separate read-only check
+on one normal disposable window: four passive outline bars, unchanged foreground
+focus, identical captured pixels, and successful stop and process/window cleanup.
+It made zero input-tool requests and zero model requests. This packaged check
+does not cover the complete seven-case source matrix or model-driven app tasks.
+See [the packaged validation receipt](outline-packaged-validation.json).
+The updated source suite passed 286 tests with one environment skip, and all 30
+packaging tests passed. Version 0.1.6 remains an unpublished candidate.
