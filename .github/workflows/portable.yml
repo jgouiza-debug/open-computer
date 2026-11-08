@@ -1,0 +1,36 @@
+name: Portable Windows candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out reviewed source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Select exact CPython x64
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14.10'
+          architecture: x64
+          check-latest: false
+      - name: Build allowlisted portable candidate
+        id: portable
+        run: ./scripts/build-portable.ps1 -PythonPath (Get-Command python).Source
+      - name: Upload candidate for independent validation
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: opencomputer-windows-x64-portable-candidate
+          path: ${{ steps.portable.outputs.artifact-dir }}
+          if-no-files-found: error
+          retention-days: 14

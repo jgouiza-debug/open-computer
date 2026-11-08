@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "python_release": "3.14.10",
+  "upstream_sbom": {
+    "url": "https://www.python.org/ftp/python/3.14.10/python-3.14.10-amd64.exe.spdx.json",
+    "file": "licenses/CPython-3.14.10.spdx.json",
+    "sha256": "631d10bf095ea6855a0d20fa0553d2de6f68288fc5b5ca943f1cb74d8dcc0b5c"
+  },
+  "licenses": [
+    {
+      "component": "bzip2-1.0.8",
+      "file": "licenses/bzip2-1.0.8.txt",
+      "source_url": "https://raw.githubusercontent.com/python/cpython-source-deps/bzip2-1.0.8/LICENSE",
+      "sha256": "c6dbbf828498be844a89eaa3b84adbab3199e342eb5cb2ed2f0d4ba7ec0f38a3"
+    },
+    {
+      "component": "libffi-3.4.4",
+      "file": "licenses/libffi-3.4.4.txt",
+      "source_url": "https://raw.githubusercontent.com/python/cpython-source-deps/libffi-3.4.4/LICENSE",
+      "sha256": "2c9c2acb9743e6b007b91350475308aee44691d96aa20eacef8e199988c8c388"
+    },
+    {
+      "component": "mpdecimal-4.0.0",
+      "file": "licenses/mpdecimal-4.0.0.txt",
+      "source_url": "https://raw.githubusercontent.com/python/cpython-source-deps/mpdecimal-4.0.0/COPYRIGHT.txt",
+      "sha256": "2713324211652ce4a60e6e21e54f9dc3004299e591b0933a352f1a89c5fb53c2"
+    },
+    {
+      "component": "OpenSSL-3.5.9",
+      "file": "licenses/OpenSSL-3.5.9.txt",
+      "source_url": "https://raw.githubusercontent.com/python/cpython-source-deps/openssl-3.5.9/LICENSE.txt",
+      "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a"
+    },
+    {
+      "component": "Tcl-9.0.4.0",
+      "file": "licenses/Tcl-9.0.4.0.txt",
+      "source_url": "https://raw.githubusercontent.com/python/cpython-source-deps/tcl-9.0.4.0/license.terms",
+      "sha256": "c0a69a2bfd757361ec7e6143973b103c90409316b49e9c88db26ad6388e79f16"
+    },
+    {
+      "component": "Tk-9.0.4.1",
+      "file": "licenses/Tk-9.0.4.1.txt",
+      "source_url": "https://raw.githubusercontent.com/python/cpython-source-deps/tk-9.0.4.1/license.terms",
+      "sha256": "2cde822b93ca16ae535c954b7dfe658b4ad10df2a193628d1b358f1765e8b198"
+    },
+    {
+      "component": "XZ-5.2.5",
+      "file": "licenses/XZ-5.2.5.txt",
+      "source_url": "https://raw.githubusercontent.com/python/cpython-source-deps/xz-5.2.5/COPYING",
+      "sha256": "bcb02973ef6e87ea73d331b3a80df7748407f17efdb784b61b47e0e610d3bb5c"
+    },
+    {
+      "component": "zlib-ng-2.2.4",
+      "file": "licenses/zlib-ng-2.2.4.txt",
+      "source_url": "https://raw.githubusercontent.com/python/cpython-source-deps/zlib-ng-2.2.4/LICENSE.md",
+      "sha256": "6c9f0d975b41afaa34d22f55bb8986ce69e5cb7ad327cb2b28820cd425edf5ee"
+    },
+    {
+      "component": "Zstandard-1.5.7",
+      "file": "licenses/Zstandard-1.5.7.txt",
+      "source_url": "https://raw.githubusercontent.com/python/cpython-source-deps/zstd-1.5.7/LICENSE",
+      "sha256": "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8"
+    },
+    {
+      "component": "Expat-2.9.0",
+      "file": "licenses/Expat-2.9.0.txt",
+      "source_url": "https://raw.githubusercontent.com/python/cpython/v3.14.10/Modules/expat/COPYING",
+      "sha256": "31b15de82aa19a845156169a17a5488bf597e561b2c318d159ed583139b25e87"
+    },
+    {
+      "component": "HACL",
+      "file": "licenses/HACL.txt",
+      "source_url": "https://raw.githubusercontent.com/python/cpython/v3.14.10/Modules/_hacl/Hacl_Hash_SHA2.c",
+      "sha256": "998ce04fb8ad9dedb0bc1b44938f8c3dcf1089780fa105ce1c8c30fb5554d78c",
+      "extraction": "Exact leading license/public-domain comment, unchanged."
+    },
+    {
+      "component": "SQLite-3.50.4.0",
+      "file": "licenses/SQLite-3.50.4.0.txt",
+      "source_url": "https://raw.githubusercontent.com/python/cpython-source-deps/sqlite-3.50.4.0/sqlite3.h",
+      "sha256": "85806d613cfda5901f848b3b5b4b04396c8c64e89c97c0af3706c42b0c44bb47",
+      "extraction": "Exact leading license/public-domain comment, unchanged."
+    }
+  ],
+  "runtime_distribution_notice": "Copy actual installed LICENSE.txt as CPython/LICENSE.txt; it includes Microsoft Distributable Code restrictions. Exact runtime files are inventoried separately."
+}
