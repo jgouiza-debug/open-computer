@@ -6,7 +6,7 @@
 
 An independent, MIT-licensed Windows computer-use toolkit for local and
 open-source AI models. A desktop panel lets you choose a window and arm control;
-the model observes screenshots and uses mouse and keyboard tools. A blue outline
+the model observes control text or screenshots and uses mouse and keyboard tools. A blue outline
 and AI cursor make activity visible.
 
 This is an early implementation, not a drop-in replacement for Codex's private
@@ -17,12 +17,32 @@ runtime. It follows the same **observe → one action → observe again** workfl
 
 ## Install and run
 
+### Portable Windows preview
+
+On Windows 10 or newer (x64), download
+[OpenComputer-0.1.5-windows-x64-portable.zip](https://github.com/jgouiza-debug/open-computer/releases/download/v0.1.5/OpenComputer-0.1.5-windows-x64-portable.zip),
+extract the entire folder, and open **OpenComputer.exe**. Python, Tk, and Pillow
+are bundled; you do not need to install Python or build Rust. Keep both EXEs and
+`_internal` together. Models are supplied separately.
+
+For compact control-text observations, start **Start-OpenComputer-Semantic.cmd**
+to explicitly enable the included read-only Rust helper. Startup does not select
+a target or arm control. Use **Copy MCP config** in the panel to connect a client.
+
+See the [portable guide](docs/portable.md) and
+[validation results](docs/portable-validation.json). The relocated-folder test
+passed with Python absent from the child PATH, including Unicode export, MCP,
+and hidden demo GUI initialization. A fresh Windows VM and a real model-driven
+task were not tested for this archive. This is an unsigned preview.
+
+### Python source installation
+
 Requires Windows, Python 3.11+ with Tkinter, and Pillow >=12.2,<13 for
 [single-window capture](https://pillow.readthedocs.io/en/stable/reference/ImageGrab.html).
 Native fixture validation used Pillow 12.2.0; clean installation also passed
 with Pillow 12.3.0. Pillow 13 is excluded pending validation.
 
-Download and extract the preview ZIP, then double-click **install.cmd**. After it
+Download and extract a source preview ZIP, then double-click **install.cmd**. After it
 finishes, double-click **start-open-computer.cmd**. Python must already be
 installed and available as `python`.
 

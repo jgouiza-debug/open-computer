@@ -3,24 +3,35 @@
 See [compatibility evidence](mcp-compatibility.md) for the tested clients and
 the distinction between protocol checks, desktop observations, and model tasks.
 
-Install Open Computer with `install.cmd`, then start the desktop panel with
-`start-open-computer.cmd`. Keep it disarmed for the initial connection check.
-To enable text observations, use `start-open-computer-semantic.cmd` from a
-Windows preview ZIP that includes the Rust helper.
+For the [portable Windows preview](portable.md), extract the whole folder and
+open `OpenComputer.exe`. For a Python source installation, run `install.cmd`,
+then `start-open-computer.cmd`. Keep the panel disarmed for the initial
+connection check. To enable text observations, use the portable bundle's
+`Start-OpenComputer-Semantic.cmd`, or the source preview's
+`start-open-computer-semantic.cmd` when it includes the Rust helper.
 
 ## Generate the configuration
 
-Click **Copy MCP config** in the panel, or run this from the installation folder:
+Click **Copy MCP config** in either panel. For a portable installation, you can
+also run this from its extracted folder:
+
+```powershell
+.\OpenComputerCLI.exe setup config --output open-computer.mcp.json
+```
+
+For a Python source installation, use:
 
 ```powershell
 .\.venv\Scripts\python.exe -m opencomputer.setup config --output open-computer.mcp.json
 ```
 
 The file contains an `mcpServers` object with one `open-computer` entry. Its
-absolute executable and package paths support folders with spaces. Keep its
-`command`, `args`, and `env` together; do not substitute a different Python
-installation. It contains no panel token, but its paths identify your local
-installation, so regenerate it on each computer.
+absolute executable paths support folders with spaces and non-Latin characters.
+Keep its `command`, `args`, and `env` together. The portable configuration targets
+the sibling `OpenComputerCLI.exe` with `args: ["mcp"]` and `env: {}`; the source
+configuration uses its own Python installation. It contains no panel token,
+but its paths identify your local installation. Regenerate it on each computer
+and after moving the installation folder.
 
 Export creates a new UTF-8 file. It refuses an existing destination unless you
 explicitly add `--force`, which replaces that file. Create the destination
@@ -96,7 +107,9 @@ an unavailable connection until the panel starts. Refresh tools in the host if
 its initial discovery failed. A missing or malformed connection file does not
 terminate the bridge; fix the panel connection and explicitly read again.
 
-If the bridge cannot start, rerun `install.cmd`, regenerate its configuration,
-and verify that the configured executable still exists. Run
+If the bridge cannot start, verify that its configured executable still exists
+and regenerate the configuration. For a portable bundle, keep the complete
+extracted folder together and run `OpenComputerCLI.exe setup doctor --offline`.
+For a source installation, rerun `install.cmd` if needed. Run
 `.\.venv\Scripts\python.exe -m opencomputer.setup doctor` for a read-only check;
 `doctor --offline` checks dependencies without contacting the panel.
