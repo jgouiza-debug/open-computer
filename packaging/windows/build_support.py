@@ -17,6 +17,7 @@ import shutil
 import struct
 import sys
 import sysconfig
+import tempfile
 import tomllib
 import types
 from typing import Any
@@ -29,7 +30,7 @@ NATIVE_SOURCE = "05c3721b3962ace619441431fcdb8e4eb4be2e93"
 NATIVE_TREE = "bb5910da594cefabb3cb7e00b41c1e0ca14c1199"
 APP_MODULES = (
     "__init__", "app", "backend", "cli", "controller", "mcp", "model_client",
-    "native_client", "overlay", "semantic", "server", "setup",
+    "native_client", "overlay", "semantic", "server", "setup", "headless", "safety",
 )
 PACKAGING_FILES = (
     "OpenComputer.spec", "gui_entry.py", "cli_entry.py", "build_support.py",
@@ -155,6 +156,8 @@ def stage(root: Path, destination: Path) -> None:
     if destination.exists():
         raise ValueError("Staging destination must be new; no existing files are deleted")
     files = ["LICENSE", "pyproject.toml"]
+    files += ["scripts/install_skill.ps1", "skills/open-computer/SKILL.md",
+              "skills/open-computer/scripts/open-computer.ps1", "skills/open-computer/references/hosts.md"]
     files += [f"opencomputer/{name}.py" for name in APP_MODULES]
     files += [f"packaging/windows/{name}" for name in PACKAGING_FILES]
     catalog = load(root / "packaging/windows/runtime-licenses.json")
@@ -344,7 +347,11 @@ def finalize(root: Path, bundle: Path, toc_path: Path, wheels: Path,
     verify_os_components_absent(actual, omitted_names)
     for source, target in ((root / "LICENSE", "LICENSE"),
                            (root / "packaging/windows/PORTABLE-README.txt", "PORTABLE-README.txt"),
-                           (root / "packaging/windows/Start-OpenComputer-Semantic.cmd", "Start-OpenComputer-Semantic.cmd")):
+                           (root / "packaging/windows/Start-OpenComputer-Semantic.cmd", "Start-OpenComputer-Semantic.cmd"),
+                           (root / "scripts/install_skill.ps1", "Install-OpenComputerSkill.ps1"),
+                           (root / "skills/open-computer/SKILL.md", "skill/SKILL.md"),
+                           (root / "skills/open-computer/scripts/open-computer.ps1", "skill/scripts/open-computer.ps1"),
+                           (root / "skills/open-computer/references/hosts.md", "skill/references/hosts.md")):
         checked_copy(source, bundle / target, root)
         expected.add(target)
     notices(root, bundle, wheels, deps, expected)
@@ -371,7 +378,7 @@ def finalize(root: Path, bundle: Path, toc_path: Path, wheels: Path,
     tool_versions = {item["name"]: importlib.metadata.version(item["name"]) for item in deps["packages"]}
     if any(tool_versions[r["name"]] != r["version"] for r in deps["packages"]):
         raise ValueError("Installed dependency differs from locked version")
-    manifest = {"schema_version": 1, "app": {"version": version, "source_commit": context["source_commit"], "source_clean": True, "minimum_windows": "10"},
+    manifest = {"schema_version": 1, "app": {"version": version, "source_commit": context["source_commit"], "source_clean": True, "minimum_windows": "10", "capabilities": ["headless-v1"]},
                 "toolchain": {"python": PYTHON, "architecture": "x64", "packages": tool_versions,
                               "runner_image": context["runner_image"], "windows": context["windows"]},
                 "inputs": {"spec_sha256": digest(root / "packaging/windows/OpenComputer.spec"),
@@ -396,7 +403,56 @@ def finalize(root: Path, bundle: Path, toc_path: Path, wheels: Path,
             info.external_attr = 0o644 << 16
             archive.writestr(info, path.read_bytes())
     target.with_suffix(target.suffix + ".sha256").write_text(f"{digest(target)} *{target.name}\n", encoding="ascii")
+    create_skill_archive(bundle, output)
     return target
+
+
+def create_skill_archive(bundle: Path, output: Path) -> Path:
+    """Build a self-contained skill from the exact portable manifest inventory."""
+    manifest = load(bundle / "build-manifest.json")
+    version = manifest["app"]["version"]
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version) or "headless-v1" not in manifest["app"].get("capabilities", []):
+        raise ValueError("Skill requires a headless-capable release")
+    with tempfile.TemporaryDirectory(prefix="opencomputer-skill-build-") as temporary:
+        skill = Path(temporary) / "open-computer"
+        runtime = skill / "runtime/OpenComputer"
+        for row in manifest["files"]:
+            name = relative(row["path"])
+            source, destination = bundle / name, runtime / name
+            checked_copy(source, destination, bundle)
+            if destination.stat().st_size != row["size"] or digest(destination) != row["sha256"]:
+                raise ValueError("Skill runtime copy differs from portable manifest")
+        checked_copy(bundle / "build-manifest.json", runtime / "build-manifest.json", bundle)
+        for name in ("SKILL.md", "scripts/open-computer.ps1", "references/hosts.md"):
+            checked_copy(runtime / "skill" / name, skill / name, runtime)
+        files = [{"path": path.relative_to(skill).as_posix(), "size": path.stat().st_size, "sha256": digest(path)}
+                 for path in sorted(p for p in skill.rglob("*") if p.is_file())]
+        (skill / "install-manifest.json").write_text(json.dumps({"schema_version": 1,
+            "kind": "opencomputer-skill-v1", "version": version, "files": files}, indent=2) + "\n", encoding="utf-8")
+        output.mkdir(parents=True, exist_ok=True)
+        archive_path = output / f"OpenComputer-{version}-windows-x64-skill.zip"
+        with zipfile.ZipFile(archive_path, "x", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+            for path in sorted(p for p in skill.rglob("*") if p.is_file()):
+                info = zipfile.ZipInfo("open-computer/" + path.relative_to(skill).as_posix(), (2026, 1, 1, 0, 0, 0))
+                info.compress_type, info.external_attr = zipfile.ZIP_DEFLATED, 0o644 << 16
+                archive.writestr(info, path.read_bytes())
+    archive_hash = digest(archive_path)
+    archive_path.with_suffix(".zip.sha256").write_text(f"{archive_hash} *{archive_path.name}\n", encoding="ascii")
+    installer = output / "Install-OpenComputerSkill.ps1"
+    checked_copy(bundle / installer.name, installer, bundle)
+    installer_hash = digest(installer)
+    installer.with_suffix(".ps1.sha256").write_text(f"{installer_hash} *{installer.name}\n", encoding="ascii")
+    # One PowerShell command; downloaded installer executes only after its pinned hash matches.
+    url = f"https://github.com/jgouiza-debug/open-computer/releases/download/v{version}/{installer.name}"
+    command = ("& { $ocInstaller = Join-Path ([IO.Path]::GetTempPath()) ('oc-skill-' + [guid]::NewGuid().ToString('N') + '.ps1'); "
+        "try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 60 -Uri '" + url + "' -OutFile $ocInstaller; "
+        "$ocHash = [Security.Cryptography.SHA256]::Create(); try { $ocDigest = [BitConverter]::ToString($ocHash.ComputeHash([IO.File]::ReadAllBytes($ocInstaller))).Replace('-', '').ToLowerInvariant() } finally { $ocHash.Dispose() }; "
+        "if ($ocDigest -ne '" + installer_hash + "') { throw 'Installer hash mismatch' }; "
+        "& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ocInstaller -Release v" + version +
+        " -ExpectedArchiveSha256 '" + archive_hash + "'; if ($LASTEXITCODE -ne 0) { throw 'Skill install failed' } } "
+        "finally { if (Test-Path -LiteralPath $ocInstaller) { Remove-Item -LiteralPath $ocInstaller -Force } } }\n")
+    (output / "install-skill-command.txt").write_text(command, encoding="utf-8")
+    return archive_path
 
 
 def main() -> None:

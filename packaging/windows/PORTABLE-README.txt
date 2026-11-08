@@ -10,6 +10,19 @@ You supply and run any model separately. This package never starts a model.
 
 Optional control-text observations:
 The optional/ helper is read-only. Ordinary startup does not load or enable it.
+
+Headless skill (requires this headless-capable release)
+----------------------------------------------------
+No panel, Python installation, Rust build or model download is required:
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-OpenComputerSkill.ps1 -PortablePath "$PWD"
+This installs the bundled skill into your user's Codex skills directory. Use
+-SkillRoot for another host. Installation runs only help/offline checks.
+  .\OpenComputerCLI.exe headless windows
+  .\OpenComputerCLI.exe headless serve --help
+The host launches one session for the user's exact HWND/PID/process-start.
+Persistent-stdio hosts use serve; shell-only hosts can use headless run with an
+already-running compatible local model. The installed references/hosts.md
+explains the difference. No global MCP configuration or input grant is created.
 Explicitly run Start-OpenComputer-Semantic.cmd to start the panel with that helper.
 That launcher can briefly show a command window. It does not select or arm a target.
 Alternatively, from PowerShell in this extracted folder:

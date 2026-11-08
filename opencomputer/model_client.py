@@ -548,7 +548,8 @@ def run_task(client: LocalClient, endpoint: str, model: str, task: str, max_step
              *, cancel_event: threading.Event | None = None,
              metrics_callback: MetricsCallback | None = None,
              performance_profile: str = "efficient", max_image_edge: int = 1280,
-             reasoning: str = "auto", observation_mode: str = "image") -> str:
+             reasoning: str = "auto", observation_mode: str = "image",
+             max_output_tokens: int = MAX_OUTPUT_TOKENS) -> str:
     """Run at most max_steps single actions. Never load, restart, select, or arm."""
     failed = False
     try:
@@ -562,6 +563,8 @@ def run_task(client: LocalClient, endpoint: str, model: str, task: str, max_step
             raise ValueError("reasoning must be auto or off")
         if observation_mode not in {"image", "semantic", "auto"}:
             raise ValueError("observation_mode must be image, semantic or auto")
+        if type(max_output_tokens) is not int or not 1 <= max_output_tokens <= MAX_OUTPUT_TOKENS:
+            raise ValueError("max_output_tokens must be an integer from 1 to 1024")
         authority = _check_authority(client, cancel_event=cancel_event)
         tools = build_model_tools(client.tools(), performance_profile, observation_mode=observation_mode)
         prompt = (SYSTEM_PROMPT + " Use activate as its own observed action if the selected window needs focus."
@@ -581,6 +584,8 @@ def run_task(client: LocalClient, endpoint: str, model: str, task: str, max_step
             view = prepare_image_view(state, 0 if state.get("observation_kind") == "semantic" or performance_profile == "baseline" else max_image_edge)
             _append_observation(messages, state, performance_profile=performance_profile, view=view, metrics_callback=metrics_callback)
             completion_options = {"performance_profile": performance_profile}
+            if max_output_tokens != MAX_OUTPUT_TOKENS:
+                completion_options["max_output_tokens"] = max_output_tokens
             if reasoning != "auto":
                 completion_options["reasoning"] = reasoning
             if cancel_event is not None:
@@ -633,6 +638,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--endpoint", default="http://127.0.0.1:8080/v1")
     parser.add_argument("--connection", type=Path, default=DEFAULT_CONNECTION_PATH)
     parser.add_argument("--max-steps", type=int, default=12)
+    parser.add_argument("--max-output-tokens", type=int, default=MAX_OUTPUT_TOKENS,
+                        help="Per-response output cap, 1..1024; default 1024")
     parser.add_argument("--max-image-edge", type=int, default=1280, help="Model image edge limit; 0 keeps native pixels")
     parser.add_argument("--performance-profile", choices=("baseline", "efficient"), default="efficient")
     parser.add_argument("--metrics-json", type=Path, help="Write sanitized performance events to this explicit path")
@@ -649,7 +656,7 @@ def main(argv: list[str] | None = None) -> None:
         result = run_task(LocalClient.from_file(options.connection), options.endpoint, options.model, options.task,
                        options.max_steps, performance_profile=options.performance_profile, max_image_edge=options.max_image_edge,
                        metrics_callback=events.append if options.metrics_json is not None else None, reasoning=options.reasoning,
-                       observation_mode=options.observation_mode)
+                       observation_mode=options.observation_mode, max_output_tokens=options.max_output_tokens)
     except (OSError, ValueError, RuntimeError, KeyError, http.client.HTTPException) as exc:
         error = f"Local model task failed: {exc}\n"
         exit_code = 1
@@ -660,6 +667,7 @@ def main(argv: list[str] | None = None) -> None:
         report = {"schema": "opencomputer.metrics/1", "performance_profile": options.performance_profile,
                   "max_image_edge": 0 if options.performance_profile == "baseline" else options.max_image_edge,
                   "requested_reasoning": options.reasoning,
+                  "requested_max_output_tokens": options.max_output_tokens,
                   "status": "cancelled" if exit_code == 130 else "error" if error else "ok", "events": events}
         try:
             options.metrics_json.write_text(json.dumps(report, allow_nan=False, indent=2), encoding="utf-8")

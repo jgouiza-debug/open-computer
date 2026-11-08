@@ -6,6 +6,7 @@ import shutil
 import struct
 import tempfile
 import unittest
+import zipfile
 
 
 HERE = Path(__file__).resolve().parent
@@ -16,6 +17,48 @@ spec.loader.exec_module(support)
 
 
 class BuildBoundaryTests(unittest.TestCase):
+    def test_skill_archive_preserves_portable_inventory_and_pins_bootstrap_hashes(self):
+        with tempfile.TemporaryDirectory(prefix="skill-archive-") as temporary:
+            root = Path(temporary)
+            bundle = root / "bundle"
+            names = ("OpenComputerCLI.exe", "Install-OpenComputerSkill.ps1", "LICENSE", "_internal/inert.txt",
+                     "skill/SKILL.md", "skill/scripts/open-computer.ps1", "skill/references/hosts.md")
+            for name in names:
+                path = bundle / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"inert fixture; never executed")
+            files = [{"path": name, "size": (bundle / name).stat().st_size, "sha256": support.digest(bundle / name)} for name in names]
+            (bundle / "build-manifest.json").write_text(json.dumps({"schema_version": 1,
+                "app": {"version": "0.1.6", "capabilities": ["headless-v1"]}, "files": files}))
+            output = root / "output"
+            path = support.create_skill_archive(bundle, output)
+            with zipfile.ZipFile(path) as archive:
+                manifest = json.loads(archive.read("open-computer/install-manifest.json"))
+                self.assertEqual(manifest["version"], "0.1.6")
+                self.assertEqual(manifest["kind"], "opencomputer-skill-v1")
+                self.assertIn("open-computer/references/hosts.md", archive.namelist())
+                for row in manifest["files"]:
+                    value = archive.read("open-computer/" + row["path"])
+                    self.assertEqual(len(value), row["size"])
+                    self.assertEqual(support.hashlib.sha256(value).hexdigest(), row["sha256"])
+            command = (output / "install-skill-command.txt").read_text()
+            self.assertIn(support.digest(path), command)
+            self.assertIn(support.digest(output / "Install-OpenComputerSkill.ps1"), command)
+            self.assertEqual((output / "Install-OpenComputerSkill.ps1").read_bytes(), (bundle / "Install-OpenComputerSkill.ps1").read_bytes())
+
+    def test_skill_archive_rejects_runtime_hash_drift(self):
+        with tempfile.TemporaryDirectory(prefix="skill-drift-") as temporary:
+            root = Path(temporary)
+            bundle = root / "bundle"
+            bundle.mkdir()
+            file = bundle / "OpenComputerCLI.exe"
+            file.write_bytes(b"original")
+            (bundle / "build-manifest.json").write_text(json.dumps({"app": {"version": "0.1.6", "capabilities": ["headless-v1"]},
+                "files": [{"path": file.name, "size": 8, "sha256": support.digest(file)}]}))
+            file.write_bytes(b"modified")
+            with self.assertRaisesRegex(ValueError, "differs from portable manifest"):
+                support.create_skill_archive(bundle, root / "output")
+
     def test_committed_lock_and_notice_hashes(self):
         deps = support.validate_inputs(ROOT)
         self.assertEqual(len(deps["packages"]), 9)

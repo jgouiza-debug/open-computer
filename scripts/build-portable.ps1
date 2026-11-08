@@ -89,6 +89,8 @@ try {
     $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
     & $cli --help | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Frozen CLI root help failed" }
+    & $cli headless serve --help | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Frozen headless help failed" }
     & $cli setup doctor --offline | Set-Content -LiteralPath (Join-Path $artifactDir "private-doctor.json") -Encoding utf8NoBOM
     if ($LASTEXITCODE -ne 0) { throw "Frozen offline doctor failed" }
     $configText = (& $cli setup config) -join "`n"
@@ -98,7 +100,7 @@ try {
     if ($server.command -ne $cli -or @($server.args).Count -ne 1 -or $server.args[0] -ne "mcp" -or @($server.env.PSObject.Properties).Count -ne 0) {
         throw "Frozen config violated sibling CLI/args/env contract"
     }
-    @{schema_version=1; offline_doctor_passed=$true; sibling_config_passed=$true; unrelated_cwd=$true; restricted_path=$true; model_calls=0; native_calls=0; gui_calls=0; sdk_probe="not performed by this build gate"} |
+    @{schema_version=1; offline_doctor_passed=$true; headless_help_passed=$true; sibling_config_passed=$true; unrelated_cwd=$true; restricted_path=$true; model_calls=0; native_calls=0; gui_calls=0; sdk_probe="not performed by this build gate"} |
         ConvertTo-Json | Set-Content -LiteralPath (Join-Path $public "portable-cli-receipt.json") -Encoding utf8NoBOM
 } finally { $env:PATH = $savedPath; Pop-Location }
 Copy-Item -LiteralPath (Join-Path $bundle "build-manifest.json") -Destination (Join-Path $public "build-manifest.json")

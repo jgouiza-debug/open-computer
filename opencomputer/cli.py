@@ -6,7 +6,7 @@ import argparse
 import importlib
 import sys
 
-COMMANDS = {"mcp": ".mcp", "setup": ".setup", "run": ".model_client"}
+COMMANDS = {"mcp": ".mcp", "setup": ".setup", "run": ".model_client", "headless": ".headless"}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -18,7 +18,7 @@ def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=tuple(COMMANDS),
-                        help="mcp: stdio bridge; setup: config/doctor; run: existing local model client")
+                        help="mcp: panel bridge; headless: task-bound runtime; setup: config/doctor; run: model client")
     # Parse only the command: a subcommand's --help/options belong to its parser.
     command = parser.parse_args(arguments[:1]).command
     module = importlib.import_module(COMMANDS[command], __package__)

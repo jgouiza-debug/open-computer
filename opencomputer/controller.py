@@ -23,7 +23,9 @@ class Controller:
     def __init__(self, backend: WindowsBackend | FakeBackend | None = None,
                  event_sink: Callable[[dict], None] | None = None,
                  observation_max_age: float = 15.0,
-                 semantic_provider: SemanticProvider | None = None) -> None:
+                 semantic_provider: SemanticProvider | None = None,
+                 authority_validator: Callable[[dict], None] | None = None,
+                 verify_image_receipts: bool = False) -> None:
         self.backend = backend if backend is not None else WindowsBackend()
         self.event_sink = event_sink
         self.observation_max_age = observation_max_age
@@ -38,6 +40,8 @@ class Controller:
         self._generation = 0
         self._instance_id = uuid.uuid4().hex
         self.semantic_provider = semantic_provider
+        self.authority_validator = authority_validator
+        self.verify_image_receipts = verify_image_receipts
         self._semantic_cancel: threading.Event | None = None
         self._closed = False
 
@@ -70,6 +74,22 @@ class Controller:
     def _fail(self, code, message):
         raise ControllerError(code, message)
 
+    def _check_authority(self, window: dict) -> None:
+        if self.authority_validator is None:
+            return
+        try:
+            self.authority_validator(window)
+        except Exception as exc:
+            self._cancel.set()
+            self._cancel_semantic()
+            self._armed = False
+            self._stopped = True
+            self._observation = None
+            self._generation += 1
+            if isinstance(exc, ControllerError):
+                raise
+            raise ControllerError("grant_revoked", "Task authority validation failed") from exc
+
     def _window(self):
         if self._selected is None:
             self._fail("no_target", "Select a target window first")
@@ -83,6 +103,7 @@ class Controller:
             self._armed = False
             self._observation = None
             self._fail("target_changed", "Target process identity changed; select it again")
+        self._check_authority(current)
         return current
 
     def list_windows(self) -> list[dict]:
@@ -129,7 +150,7 @@ class Controller:
             return self.status()
 
     def arm(self) -> dict:
-        """Local GUI capability. Never expose this method in remote dispatch."""
+        """Trusted local startup capability; never expose in remote dispatch."""
         with self._operation_lock, self._lock:
             self._require_open()
             if self._stopped:
@@ -195,6 +216,8 @@ class Controller:
                 observation_id = uuid.uuid4().hex
                 self._observation = {"id": observation_id, "window": window,
                                      "created": time.monotonic(), "generation": generation}
+                if self.verify_image_receipts:
+                    self._observation.update(kind="image", image_digest=self._image_digest(capture))
                 return {**capture, "window": window, "observation_id": observation_id,
                         "armed": self._armed, "control_generation": generation,
                         "controller_instance_id": self._instance_id}
@@ -376,9 +399,19 @@ class Controller:
                     with self._lock:
                         if self._semantic_cancel is semantic_cancel:
                             self._semantic_cancel = None
+            elif self.verify_image_receipts:
+                capture = self._semantic_capture(window)
+                with self._lock:
+                    if self._window() != window:
+                        self._fail("target_changed", "Target changed during image revalidation")
+                    if self._image_digest(capture) != observation.get("image_digest"):
+                        self._fail("observation_changed", "Screen changed since observation; no action was taken")
+                    if time.monotonic() - observation["created"] > self.observation_max_age:
+                        self._fail("expired_observation", "Observation expired during image revalidation")
             with self._lock:
                 if self._cancel.is_set():
                     self._fail("cancelled", "Action cancelled by a local control change")
+                self._check_authority(window)
                 self._emit("action", **event)
             try:
                 self.backend.perform(action, window["id"], _expected_rect=window["rect"],

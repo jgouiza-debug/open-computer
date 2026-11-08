@@ -15,6 +15,7 @@ from tkinter import ttk
 from typing import Any
 
 from .overlay import BLUE, TargetOverlay
+from .safety import SafetyHotkey
 
 BG = "#0b0f17"
 PANEL = "#111824"
@@ -46,31 +47,6 @@ def event_description(event: dict[str, Any]) -> str:
             "stopped": "Emergency stop activated", "target": "Target selection updated",
             "reset": "Emergency stop reset; target remains disarmed"}.get(
                 kind, kind.replace("_", " ").capitalize())
-
-
-class SafetyHotkey:
-    """A separate read-only key-state watcher keeps stop usable during UI work."""
-
-    def __init__(self, stop_callback: Any) -> None:
-        self.done = threading.Event()
-        self.thread: threading.Thread | None = None
-        if sys.platform == "win32":
-            def watch() -> None:
-                user32 = ctypes.WinDLL("user32", use_last_error=True)
-                user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
-                user32.GetAsyncKeyState.restype = ctypes.c_short
-                held = False
-                while not self.done.wait(0.05):
-                    pressed = all(user32.GetAsyncKeyState(key) & 0x8000
-                                  for key in (0x11, 0x12, 0x1B))
-                    if pressed and not held:
-                        stop_callback()
-                    held = pressed
-            self.thread = threading.Thread(target=watch, name="local-stop-hotkey", daemon=True)
-            self.thread.start()
-
-    def close(self) -> None:
-        self.done.set()
 
 
 def semantic_status_text(status: dict[str, Any]) -> str:

@@ -17,6 +17,16 @@ runtime. It follows the same **observe → one action → observe again** workfl
 
 ## Install and run
 
+### Headless agent skill
+
+The v0.1.6 candidate adds a skill that uses a fixed-target console session
+without the Open Computer panel or a global Python/Rust installation. A host
+with persistent stdio can use MCP directly; a shell-only host can delegate to
+an already-running local model with `headless run`. These are distinct modes.
+See [headless installation and host requirements](docs/headless.md). The
+published v0.1.5 archive does not contain the new headless command; a new
+packaged release and its validation are required before using the skill assets.
+
 ### Portable Windows preview
 
 On Windows 10 or newer (x64), download

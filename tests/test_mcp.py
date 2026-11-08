@@ -562,6 +562,7 @@ class McpTests(unittest.TestCase):
         try:
             self.wait_http_ready(server.server_port)
             reply = _complete(f"http://127.0.0.1:{server.server_port}/v1", "fake-model", [], [])
+            capped = _complete(f"http://127.0.0.1:{server.server_port}/v1", "fake-model", [], [], max_output_tokens=256)
         finally:
             server.shutdown()
             server.server_close()
@@ -570,6 +571,8 @@ class McpTests(unittest.TestCase):
         self.assertEqual(requests[0][0], "/v1/chat/completions")
         self.assertFalse(requests[0][1]["stream"])
         self.assertEqual(requests[0][1]["max_tokens"], 1024)
+        self.assertEqual(capped["content"], "fixture response")
+        self.assertEqual(requests[1][1]["max_tokens"], 256)
 
     def test_transport_metrics_report_only_server_usage_and_sizes(self) -> None:
         events = []
@@ -760,6 +763,24 @@ class ImageAndContextTests(unittest.TestCase):
         self.assertEqual(complete.call_args.kwargs["reasoning"], "off")
         self.assertEqual(client.calls[-1][0], "stop")
         self.assertFalse(any(name == "click" for name, _ in client.calls))
+
+    def test_run_output_cap_is_forwarded_and_default_stays_unchanged(self) -> None:
+        for cap in (256, 1024):
+            with self.subTest(cap=cap), patch("opencomputer.model_client._complete", return_value={"content": "Observed"}) as complete:
+                run_task(FakeClient(), "http://127.0.0.1:9/v1", "model", "Inspect", max_output_tokens=cap)
+                self.assertEqual(complete.call_args.kwargs.get("max_output_tokens", 1024), cap)
+                body = build_model_request("model", complete.call_args.args[2], complete.call_args.args[3],
+                                           max_output_tokens=complete.call_args.kwargs.get("max_output_tokens", 1024))
+                self.assertEqual(json.loads(encode_model_request(body))["max_tokens"], cap)
+
+    def test_run_invalid_output_caps_fail_before_observation_or_model_io(self) -> None:
+        for cap in (True, False, 0, 1025, 1.5, "256", None):
+            client = FakeClient()
+            with self.subTest(cap=cap), patch("opencomputer.model_client._complete") as complete:
+                with self.assertRaisesRegex(ValueError, "max_output_tokens"):
+                    run_task(client, "http://127.0.0.1:9/v1", "model", "Inspect", max_output_tokens=cap)
+                complete.assert_not_called()
+                self.assertEqual(client.calls, [("stop", None)])
 
     def test_history_budget_drops_whole_pairs_and_preserves_task_latest_action(self) -> None:
         messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": "original task"}]

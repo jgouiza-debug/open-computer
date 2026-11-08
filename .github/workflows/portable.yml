@@ -27,6 +27,8 @@ jobs:
       - name: Build allowlisted portable candidate
         id: portable
         run: ./scripts/build-portable.ps1 -PythonPath (Get-Command python).Source
+      - name: Verify skill installer with fake runtime only
+        run: python -m unittest discover -s tests -p test_skill_install.py
       - name: Upload candidate for independent validation
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

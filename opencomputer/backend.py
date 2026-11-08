@@ -44,6 +44,11 @@ class FakeBackend:
             raise BackendError("Target window is unavailable")
         return {**self.window, "rect": dict(self.window["rect"])}
 
+    def process_identity(self, window_id: str | int) -> dict:
+        window = self.get_window(window_id)
+        return {"id": window["id"], "pid": window.get("pid", 0),
+                "process_start": str(window.get("process_start", "1"))}
+
     def capture(self, window_id: str | int) -> dict:
         window = self.get_window(window_id)
         from PIL import Image, ImageDraw
@@ -168,6 +173,34 @@ class WindowsBackend:
         self.user32.GetWindowTextW(hwnd, title, len(title))
         self._title_cache[key] = title.value
         return title.value
+
+    def process_identity(self, window_id: str | int) -> dict:
+        """Bind the window owner to its creation time; never cache this guard."""
+        window = self.get_window(window_id)
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+        kernel.GetProcessTimes.restype = wintypes.BOOL
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        handle = kernel.OpenProcess(0x1000, False, window["pid"])
+        if not handle:
+            raise BackendError("Cannot verify target process creation identity")
+        try:
+            times = [wintypes.FILETIME() for _ in range(4)]
+            if not kernel.GetProcessTimes(handle, *[ctypes.byref(value) for value in times]):
+                raise BackendError("Cannot read target process creation identity")
+            after = wintypes.DWORD()
+            if (not self.user32.GetWindowThreadProcessId(self._handle(window_id), ctypes.byref(after))
+                    or after.value != window["pid"]):
+                raise BackendError("Target process changed during identity inspection")
+            created = (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+            if created <= 0:
+                raise BackendError("Target process creation identity is unavailable")
+            return {"id": window["id"], "pid": window["pid"], "process_start": str(created)}
+        finally:
+            kernel.CloseHandle(handle)
 
     def list_windows(self) -> list[dict]:
         windows = []
