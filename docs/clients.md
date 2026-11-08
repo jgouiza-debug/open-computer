@@ -1,5 +1,8 @@
 # Connect a local model client
 
+See [compatibility evidence](mcp-compatibility.md) for the tested clients and
+the distinction between protocol checks, desktop observations, and model tasks.
+
 Install Open Computer with `install.cmd`, then start the desktop panel with
 `start-open-computer.cmd`. Keep it disarmed for the initial connection check.
 To enable text observations, use `start-open-computer-semantic.cmd` from a
