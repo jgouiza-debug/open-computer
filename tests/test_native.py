@@ -10,9 +10,11 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from PIL import Image
 
+from opencomputer import native_client
 from opencomputer.native_client import NativeClient, NativeError, _accessibility, _capture, _hello
 
 
@@ -32,7 +34,7 @@ TREE = {"snapshot_id": "own-1", "window": WINDOW,
 
 
 class NativeTests(unittest.TestCase):
-    def make_child(self, mode: str = "valid") -> NativeClient:
+    def make_child(self, mode: str = "valid", *, timeout: float = 0.5) -> NativeClient:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         path = Path(directory.name) / "fake child.py"
@@ -40,6 +42,7 @@ class NativeTests(unittest.TestCase):
                         f"hello={HELLO!r}\nwindow={WINDOW!r}\ntree={TREE!r}\nmode={mode!r}\n"
                         "for line in sys.stdin:\n"
                         " req=json.loads(line); method=req['method']\n"
+                        " if method=='hello' and mode=='hello_timeout': time.sleep(10)\n"
                         " if method!='hello' and mode=='timeout': time.sleep(10)\n"
                         " result=hello if method=='hello' else ({'windows':[window],'truncated':False} if method=='list_windows' else (tree if method=='inspect_accessibility' else window))\n"
                         " reply={'v':1,'id':req['id'],'ok':True,'result':result}\n"
@@ -48,7 +51,7 @@ class NativeTests(unittest.TestCase):
                         " if method!='hello' and mode=='oversize': print('x'*33554433,flush=True); continue\n"
                         " if mode=='input': reply['result']=dict(hello,supports_input=True)\n"
                         " print(json.dumps(reply),flush=True)\n", encoding="utf-8")
-        child = NativeClient(sys.executable, ["-u", str(path)], timeout=0.5)
+        child = NativeClient(sys.executable, ["-u", str(path)], timeout=timeout)
         self.addCleanup(child.close)
         return child
 
@@ -73,6 +76,24 @@ class NativeTests(unittest.TestCase):
         self.assertIsNotNone(client._process.poll())
         with self.assertRaises(NativeError):
             client.call("list_windows")
+
+    def test_hello_uses_configured_short_deadline_and_reaps_child(self) -> None:
+        spawned = []
+        original_popen = native_client.subprocess.Popen
+
+        def spawn(*args, **kwargs):
+            process = original_popen(*args, **kwargs)
+            spawned.append(process)
+            return process
+
+        started = time.monotonic()
+        with patch.object(native_client.subprocess, "Popen", side_effect=spawn):
+            with self.assertRaises(NativeError) as caught:
+                self.make_child("hello_timeout", timeout=0.1)
+        self.assertEqual(caught.exception.code, "timeout")
+        self.assertLess(time.monotonic() - started, 2)
+        self.assertEqual(len(spawned), 1)
+        self.assertIsNotNone(spawned[0].poll())
 
     def test_deadline_also_bounds_a_blocked_request_writer(self) -> None:
         client = self.make_child()

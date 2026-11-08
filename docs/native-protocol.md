@@ -29,8 +29,9 @@ it does not retry observation requests automatically or restart another process.
 Limits include the newline: request 16 KiB, reply 32 MiB. The provider drains an
 oversized request through its newline and returns `resource_limit`; it must not
 interpret the suffix as another request. The adapter bounds retained stderr to
-64 KiB while draining it, and uses a 5-second startup/hello deadline and a
-5-second per-request deadline. A hung UI Automation provider can exceed the
+64 KiB while draining it. Startup/hello and each later request use the configured
+deadline (5 seconds by default); an enclosing operation may supply a shorter
+remaining budget. A hung UI Automation provider can exceed the
 native traversal budget; the owned-child deadline is the hard bound.
 
 `hello` is mandatory before other requests. Its methods array is authoritative:

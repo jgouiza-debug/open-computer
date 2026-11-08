@@ -207,7 +207,7 @@ class NativeClient:
         for reader in self._readers:
             reader.start()
         try:
-            self.hello = _hello(self._request("hello", {}, timeout=5.0))
+            self.hello = _hello(self._request("hello", {}))
         except BaseException:
             self.close()
             raise
