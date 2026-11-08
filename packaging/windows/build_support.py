@@ -136,6 +136,13 @@ def validate_inputs(root: Path) -> dict:
         if not item["wheel_license_files"]:
             raise ValueError("Missing wheel license inventory")
     licenses = load(here / "runtime-licenses.json")
+    # The actual Python3.14.10/Tcl9 candidate ships libtommath.dll. Keep its
+    # separate upstream notice mandatory rather than assuming Tcl covers it.
+    if not any(item.get("component") == "LibTomMath-Tcl-9.0.4.0" and
+               item.get("file") == "licenses/LibTomMath-Tcl-9.0.4.0.txt" and
+               item.get("source_url") == "https://raw.githubusercontent.com/python/cpython-source-deps/tcl-9.0.4.0/libtommath/LICENSE"
+               for item in licenses["licenses"]):
+        raise ValueError("Missing pinned LibTomMath notice for the Python3.14.10 Tcl9 runtime")
     for item in licenses["licenses"] + [licenses["upstream_sbom"]]:
         source = here / relative(item["file"])
         if source.is_symlink() or digest(source) != item["sha256"]:

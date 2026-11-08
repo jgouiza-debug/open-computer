@@ -30,6 +30,17 @@ class BuildBoundaryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 support.validate_inputs(root)
 
+    def test_observed_tcl_libtommath_notice_cannot_be_omitted(self):
+        with tempfile.TemporaryDirectory(prefix="portable-libtommath-") as tmp:
+            root = Path(tmp)
+            shutil.copytree(HERE, root / "packaging/windows")
+            catalog = root / "packaging/windows/runtime-licenses.json"
+            data = json.loads(catalog.read_text(encoding="utf-8"))
+            data["licenses"] = [item for item in data["licenses"] if item["component"] != "LibTomMath-Tcl-9.0.4.0"]
+            catalog.write_text(json.dumps(data), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Missing pinned LibTomMath notice"):
+                support.validate_inputs(root)
+
     def test_relative_paths_reject_escape(self):
         for value in ("../secret", "/etc/passwd", "C:/private", "folder/../secret", "folder//file", "folder/./file"):
             with self.subTest(value=value), self.assertRaises(ValueError):

@@ -80,6 +80,13 @@
       "source_url": "https://raw.githubusercontent.com/python/cpython-source-deps/sqlite-3.50.4.0/sqlite3.h",
       "sha256": "85806d613cfda5901f848b3b5b4b04396c8c64e89c97c0af3706c42b0c44bb47",
       "extraction": "Exact leading license/public-domain comment, unchanged."
+    },
+    {
+      "component": "LibTomMath-Tcl-9.0.4.0",
+      "file": "licenses/LibTomMath-Tcl-9.0.4.0.txt",
+      "source_url": "https://raw.githubusercontent.com/python/cpython-source-deps/tcl-9.0.4.0/libtommath/LICENSE",
+      "sha256": "2fa64b163659f41965c9815882a8296d3d03ff546b76153e11445f9bdecf955a",
+      "component_scope": "Exact LibTomMath notice bundled in the CPython Tcl9.0.4.0 dependency source; covers observed libtommath.dll."
     }
   ],
   "runtime_distribution_notice": "Copy actual installed LICENSE.txt as CPython/LICENSE.txt; it includes Microsoft Distributable Code restrictions. Exact runtime files are inventoried separately."
