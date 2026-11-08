@@ -2,8 +2,10 @@
 
 No portable executable, GUI, native provider, model or desktop input is run.
 """
+import ctypes
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -50,6 +52,19 @@ def quote(path):
     return "'" + str(path).replace("'", "''") + "'"
 
 
+def windows_short_path(path):
+    """Return a filesystem 8.3 alias when enabled; never change OS settings."""
+    if os.name != "nt":
+        return None
+    from ctypes import wintypes
+    function = ctypes.WinDLL("kernel32", use_last_error=True).GetShortPathNameW
+    function.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+    function.restype = wintypes.DWORD
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = function(str(path), buffer, len(buffer))
+    return Path(buffer.value) if 0 < length < len(buffer) else None
+
+
 @unittest.skipUnless(POWERSHELL, "PowerShell unavailable; no installer process test")
 class SkillInstallTests(unittest.TestCase):
     def setUp(self):
@@ -87,16 +102,23 @@ class SkillInstallTests(unittest.TestCase):
 
     def test_verification_path_is_not_longer_than_final_runtime_on_ps5_and_ps7(self):
         shells = list(dict.fromkeys(filter(None, (shutil.which("powershell.exe"), shutil.which("pwsh")))))
-        for index, shell in enumerate(shells):
-            with self.subTest(shell=Path(shell).name):
-                skills = self.root / ("Windows PowerShell skills " + str(index))
-                final_exe = skills / "open-computer/runtime/OpenComputer/OpenComputerCLI.exe"
-                self.ps(f"$final={quote(final_exe)}; $verify={{param($p) "
-                    "$staged=Join-Path $p 'runtime/OpenComputer/OpenComputerCLI.exe'; "
-                    "if ($staged.Length -gt $final.Length) {throw 'Verification lengthens runtime path'} }; "
-                    f"Install-CheckedSkill {quote(self.candidate)} {quote(skills)} $false $verify | Out-Null; "
-                    f"Install-CheckedSkill {quote(self.candidate)} {quote(skills)} $true $verify | Out-Null", executable=shell)
-                self.assertFalse(list(skills.glob(".oc-*")))
+        roots = [("long", self.root)]
+        alias = windows_short_path(self.root)
+        if alias is not None and str(alias).casefold() != str(self.root).casefold():
+            roots.append(("short-alias", alias))
+        for label, root in roots:
+            for index, shell in enumerate(shells):
+                with self.subTest(shell=Path(shell).name, path=label):
+                    skills = root / ("Windows PowerShell skills " + label + str(index))
+                    # PowerShell may expand a Python-supplied RUNNER~1 temp path.
+                    # Compare actual sibling paths using the same provider rules.
+                    self.ps("$verify={param($p) "
+                        "$staged=Join-Path $p 'runtime/OpenComputer/OpenComputerCLI.exe'; "
+                        "$final=Join-Path (Split-Path -Parent $p) 'open-computer/runtime/OpenComputer/OpenComputerCLI.exe'; "
+                        "if ($staged.Length -gt $final.Length) {throw 'Verification lengthens runtime path'} }; "
+                        f"Install-CheckedSkill {quote(self.candidate)} {quote(skills)} $false $verify | Out-Null; "
+                        f"Install-CheckedSkill {quote(self.candidate)} {quote(skills)} $true $verify | Out-Null", executable=shell)
+                    self.assertFalse(list(skills.glob(".oc-*")))
 
     def test_tamper_and_unlisted_files_reject_before_verifier(self):
         for mode in ("hash", "extra"):
