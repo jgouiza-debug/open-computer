@@ -170,7 +170,8 @@ def observe_owned(client, metadata: dict, pinned: dict | None = None) -> dict:
     return last
 
 
-def prepare_request(observation: dict, model: str, representation: str, reasoning: str = "auto") -> dict:
+def prepare_request(observation: dict, model: str, representation: str, reasoning: str = "auto",
+                    *, max_tokens: int = 1024) -> dict:
     if representation not in {"image", "semantic"}:
         raise ValueError("Unknown representation")
     if representation == "image":
@@ -180,9 +181,9 @@ def prepare_request(observation: dict, model: str, representation: str, reasonin
         content = [{"type": "text", "text": "Observation: complete client-relative controls; editable values omitted.\n" + observation["compact_tree"]}]
     messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": TASK},
                 {"role": "user", "content": content}]
-    body = model_client.build_model_request(model, messages, TOOLS, reasoning=reasoning)
+    body = model_client.build_model_request(model, messages, TOOLS, reasoning=reasoning, max_output_tokens=max_tokens)
     encoded = model_client.encode_model_request(body, performance_profile="efficient")
-    return {"messages": messages, "tools": TOOLS, "request_bytes": len(encoded),
+    return {"messages": messages, "tools": TOOLS, "request_bytes": len(encoded), "requested_max_tokens": max_tokens,
             "request_sha256": hashlib.sha256(encoded).hexdigest(), "representation": representation,
             "image_pixels": 720 * 440 if representation == "image" else 0,
             "png_bytes": len(observation["png"]) if representation == "image" else 0,
@@ -275,9 +276,11 @@ def save_evidence(observation: dict, directory: Path) -> None:
 
 def compare_live(metadata: dict, executable: Path, endpoint: str, model: str, directory: Path, *,
                  reasoning: str = "auto", timeout: float = 120, authorized: bool = False,
-                 client_factory=None) -> dict:
+                 client_factory=None, max_tokens: int = 1024) -> dict:
     if not authorized:
         raise BenchmarkError("Live comparison requires explicit --run")
+    if type(max_tokens) is not int or not 1 <= max_tokens <= model_client.MAX_OUTPUT_TOKENS:
+        raise BenchmarkError("max_tokens must be an integer from 1 to 1024")
     if not 1 <= timeout <= 120:
         raise BenchmarkError("Overall comparison timeout must be from 1 to 120 seconds")
     validate_fixture(metadata, live=True)
@@ -290,7 +293,8 @@ def compare_live(metadata: dict, executable: Path, endpoint: str, model: str, di
     if reasoning not in {"auto", "off"} or not model:
         raise BenchmarkError("Explicit model/reasoning configuration is invalid")
     result = {"mode": "live", "order": "ABBA", "tool_dispatch": False, "completed": False,
-              "requested_reasoning": reasoning, "overall_budget_seconds": timeout, "calls": [],
+              "requested_reasoning": reasoning, "requested_max_tokens": max_tokens,
+              "overall_budget_seconds": timeout, "calls": [],
               "vision_encode_ms": None,
               "limits": ["Small serial sample; output lengths and prefix caches affect time.",
                          "No control action is invoked; label accuracy is not desktop task completion.",
@@ -332,17 +336,17 @@ def compare_live(metadata: dict, executable: Path, endpoint: str, model: str, di
             readiness = check_model_ready(endpoint, cancel_event=cancellation, deadline=deadline)
             check_budget()
             representation = "image" if label == "A" else "semantic"
-            request = prepare_request(initial, model, representation, reasoning)
+            request = prepare_request(initial, model, representation, reasoning, max_tokens=max_tokens)
             events = []
             call = {"index": index, "condition": label, "representation": representation,
-                    **{key: request[key] for key in ("request_bytes", "request_sha256", "image_pixels", "png_bytes", "tree_characters")},
+                    **{key: request[key] for key in ("request_bytes", "request_sha256", "image_pixels", "png_bytes", "tree_characters", "requested_max_tokens")},
                     "readiness": readiness, "status": "started"}
             result["calls"].append(call)
             started = time.perf_counter()
             try:
                 response = model_client._complete(endpoint, model, request["messages"], request["tools"],
                     cancel_event=cancellation, metrics_callback=events.append,
-                    performance_profile="efficient", reasoning=reasoning)
+                    performance_profile="efficient", reasoning=reasoning, max_output_tokens=request["requested_max_tokens"])
                 call["model_metrics"] = events
                 call["response_sha256"] = hashlib.sha256(json.dumps(response, sort_keys=True, allow_nan=False).encode()).hexdigest()
                 check_budget()
@@ -380,9 +384,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--endpoint")
     parser.add_argument("--model")
     parser.add_argument("--reasoning", choices=("auto", "off"), default="auto")
+    parser.add_argument("--max-tokens", type=int, default=1024,
+                        help="Per-response output cap from 1 to 1024 (default 1024); identical for both conditions")
     parser.add_argument("--timeout", type=float, default=120)
     parser.add_argument("--artifacts", type=Path, default=Path("artifacts/semantic-benchmark"))
     options = parser.parse_args(argv)
+    if not 1 <= options.max_tokens <= model_client.MAX_OUTPUT_TOKENS:
+        parser.error("--max-tokens must be from 1 to 1024")
     if options.run and (options.input_json or any(value is None for value in
             (options.fixture_metadata, options.native_exe, options.endpoint, options.model))):
         parser.error("--run requires explicit --fixture-metadata, --native-exe, --endpoint, --model and no --input-json")
@@ -395,15 +403,18 @@ def main(argv: list[str] | None = None) -> int:
             if options.fixture_metadata.name != "fixture.json":
                 raise BenchmarkError("Live metadata must be the owned fixture's fixture.json")
             result = compare_live(read_json(options.fixture_metadata), options.native_exe, options.endpoint,
-                options.model, directory, reasoning=options.reasoning, timeout=options.timeout, authorized=True)
+                options.model, directory, reasoning=options.reasoning, timeout=options.timeout, authorized=True,
+                max_tokens=options.max_tokens)
         else:
             bundle = read_json(options.input_json)
             observation = validate_bundle(bundle["fixture_metadata"], bundle["capture"], bundle["accessibility"])
             save_evidence(observation, directory)
-            requests = [prepare_request(observation, "benchmark-model", mode, options.reasoning) for mode in ("image", "semantic")]
+            requests = [prepare_request(observation, "benchmark-model", mode, options.reasoning,
+                                        max_tokens=options.max_tokens) for mode in ("image", "semantic")]
             result = {"mode": "offline", "live_observation": False, "model_requests": 0, "tool_dispatch": False,
+                "requested_max_tokens": options.max_tokens,
                 "image_sha256": observation["image_sha256"], "tree_sha256": observation["tree_sha256"],
-                "payloads": [{key: item[key] for key in ("representation", "request_bytes", "image_pixels", "png_bytes", "tree_characters")}
+                "payloads": [{key: item[key] for key in ("representation", "request_bytes", "request_sha256", "requested_max_tokens", "image_pixels", "png_bytes", "tree_characters")}
                              for item in requests]}
             (directory / "semantic-benchmark.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     except (OSError, ValueError, KeyError, RuntimeError) as exc:

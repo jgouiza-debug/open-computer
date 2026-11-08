@@ -67,6 +67,26 @@ retain the native screenshot and coordinate contract and may perform their own
 image processing. Full-resolution native observations remain the authority for
 freshness and unchanged-screen checks; model-view coordinates map back to them.
 
+## Where semantic observations save work
+
+Image input is already processed before the language model generates its answer.
+For example, [vLLM's multimodal prefix-caching design](https://docs.vllm.ai/en/stable/design/prefix_caching/)
+describes image placeholders being replaced by image embeddings during prefill.
+Moving an image "into prefill" alone therefore does not remove its vision work.
+
+The optional semantic path instead reads Windows accessibility data locally and
+sends a compact text table. For covered controls, this avoids sending an image to
+the model at all. The model still prefills the text and generates its tool call.
+Canvas content or missing accessibility labels may still require an image.
+
+Prefix caching is a separate inference-engine feature: a repeated prompt prefix
+may reuse computation, while changed observation content requires fresh work.
+Open Computer does not claim a portable KV-cache import API or force an engine's
+cache settings. The benchmark records available server timing/usage counters,
+checks answer accuracy, and keeps capture time, payload bytes, tokens and model
+latency separate. A Rust implementation alone does not establish a faster model
+response; actual semantic-versus-image measurements are required.
+
 ## Capture-stage cache
 
 A separate read-only native fixture measured unchanged-frame capture with 20

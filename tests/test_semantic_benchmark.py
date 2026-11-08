@@ -4,6 +4,7 @@ import base64
 from contextlib import redirect_stderr, redirect_stdout
 from copy import deepcopy
 import io
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -242,6 +243,89 @@ class SemanticBenchmarkTests(unittest.TestCase):
         self.assertTrue(all(call[2]["reasoning"] == "off" for call in calls))
         self.assertEqual(result["calls"][0]["model_metrics"][0]["server_timings"]["prompt_ms"], 23)
         self.assertIsNone(result["vision_encode_ms"])
+
+    def test_max_tokens_matches_prepared_hash_actual_wire_and_receipts(self):
+        data, wire = bundle(), []
+        observer = FakeObserver(data)
+        observation = self.observation(data)
+
+        class FakeConnection:
+            active_socket = None
+
+            def __init__(self, *args):
+                pass
+
+            def request(self, method, path, body, headers):
+                wire.append(body)
+
+            def getresponse(self):
+                return self
+
+            status = 200
+
+            def read(self, limit):
+                return json.dumps({"choices": [{"message": response()}]}).encode()
+
+            def close(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(benchmark, "check_model_ready", return_value={"loaded": True}), \
+                patch.object(benchmark.model_client, "_ModelConnection", FakeConnection):
+            result = benchmark.compare_live(data["fixture_metadata"], Path("fake.exe"),
+                "http://127.0.0.1:1/v1", "test-model", Path(temporary), authorized=True,
+                reasoning="off", max_tokens=128, client_factory=lambda *args, **kwargs: observer)
+        self.assertTrue(result["completed"])
+        self.assertEqual(result["requested_max_tokens"], 128)
+        self.assertEqual(len(wire), 4)
+        for raw, call in zip(wire, result["calls"], strict=True):
+            prepared = benchmark.prepare_request(observation, "test-model", call["representation"],
+                                                 "off", max_tokens=128)
+            self.assertEqual(json.loads(raw)["max_tokens"], 128)
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), prepared["request_sha256"])
+            self.assertEqual(call["request_sha256"], prepared["request_sha256"])
+            self.assertEqual(call["requested_max_tokens"], 128)
+        default = benchmark.prepare_request(observation, "test-model", "semantic")
+        self.assertEqual(default["requested_max_tokens"], 1024)
+        for cap in (1, 128, 256, 512, 1024):
+            prepared = benchmark.prepare_request(observation, "test-model", "semantic", max_tokens=cap)
+            self.assertEqual(prepared["requested_max_tokens"], cap)
+            self.assertEqual(benchmark.model_client.build_model_request("model", [], [], max_output_tokens=cap)["max_tokens"], cap)
+
+    def test_invalid_max_tokens_reject_before_observer_readiness_or_model_io(self):
+        for value in (0, -1, 1025, True, 1.5, "128", None):
+            with patch.object(benchmark.native_client, "NativeClient") as native, \
+                    patch.object(benchmark, "check_model_ready") as readiness, \
+                    patch.object(benchmark.model_client, "_ModelConnection") as transport:
+                with self.assertRaises((ValueError, benchmark.BenchmarkError)):
+                    benchmark.compare_live({}, Path("unused.exe"), "http://127.0.0.1:1/v1", "model",
+                                           Path("unused"), authorized=True, max_tokens=value)
+                with self.assertRaises(ValueError):
+                    benchmark.model_client._complete("http://127.0.0.1:1/v1", "model", [], [],
+                                                     max_output_tokens=value)
+            native.assert_not_called()
+            readiness.assert_not_called()
+            transport.assert_not_called()
+
+    def test_cli_max_tokens_forwards_and_rejects_invalid_without_io(self):
+        data = bundle()
+        with tempfile.TemporaryDirectory() as temporary:
+            metadata = Path(temporary) / "fixture.json"
+            metadata.write_text(json.dumps(data["fixture_metadata"]), encoding="utf-8")
+            with patch.object(benchmark, "compare_live", return_value={"completed": True}) as compare, \
+                    redirect_stdout(io.StringIO()):
+                self.assertEqual(benchmark.main(["--run", "--fixture-metadata", str(metadata),
+                    "--native-exe", "unused.exe", "--endpoint", "http://127.0.0.1:1/v1", "--model", "fake",
+                    "--max-tokens", "256", "--artifacts", temporary]), 0)
+            self.assertEqual(compare.call_args.kwargs["max_tokens"], 256)
+        for value in ("0", "1025", "1.5"):
+            with patch.object(benchmark, "read_json") as read, \
+                    patch.object(benchmark, "compare_live") as compare, redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as error:
+                    benchmark.main(["--max-tokens", value])
+            self.assertEqual(error.exception.code, 2)
+            read.assert_not_called()
+            compare.assert_not_called()
 
     def test_busy_endpoint_aborts_before_any_model_request(self):
         data = bundle()

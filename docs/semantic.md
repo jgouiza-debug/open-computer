@@ -81,6 +81,14 @@ one simulated click was recorded, receipt replay was rejected, and the fixture
 controls remained unchanged. The temporary server and native child closed.
 No real input or model request was performed in that run.
 
+The installed Unsloth integration was also checked on November 7, 2026. Its
+actual MCP refresh discovered 13 tools, and `get_semantic_state` returned nine
+real fixture controls as one text block with no image block. Password text was
+absent. The controller stayed disarmed, the test stopped control, and the owned
+fixture closed normally with unchanged click counters. The saved Unsloth skill
+was updated to this semantic-aware workflow and its instructions were read back.
+This proves the installed tool route, not autonomous model task completion.
+
 The following is opt-in test infrastructure. It does not inspect arbitrary apps
 or start a model. First start the disposable standard Win32 fixture:
 
@@ -111,3 +119,8 @@ existing idle model endpoint and model name. It performs serial ABBA read-only
 requests and never dispatches actions. Actual usage and server prefill/decode
 timings are recorded when available; vision encoding time remains unavailable
 unless the server reports it. Payload byte reductions are not token counts.
+Use `--max-tokens 256` to bound each response to 256 output tokens in both
+conditions; the default is 1024 and the accepted range is 1–1024. This cap is
+included in the prepared request hash and forwarded to the actual model request.
+It limits generated output, not model loading, context allocation or vision
+encoder memory. The harness will not load a model for you.

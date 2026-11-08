@@ -25,6 +25,7 @@ LOGGER = logging.getLogger(__name__)
 MAX_MODEL_REPLY_BYTES = 4 * 1024 * 1024
 MAX_HISTORY_ACTIONS = 4
 MAX_HISTORY_BYTES = 8000
+MAX_OUTPUT_TOKENS = 1024
 SEMANTIC_FALLBACK_CODES = frozenset({"semantic_unavailable", "semantic_incomplete", "semantic_empty"})
 MetricsCallback = Callable[[dict], None]
 
@@ -139,10 +140,12 @@ def _server_timings(payload: object) -> dict:
 
 
 def build_model_request(model: str, messages: list[dict], tools: list[dict],
-                        *, max_output_tokens: int = 1024, reasoning: str = "auto") -> dict:
+                        *, max_output_tokens: int = MAX_OUTPUT_TOKENS, reasoning: str = "auto") -> dict:
     """Build the non-streaming model contract shared with offline benchmarks."""
     if reasoning not in ("auto", "off"):
         raise ValueError("reasoning must be auto or off")
+    if type(max_output_tokens) is not int or not 1 <= max_output_tokens <= MAX_OUTPUT_TOKENS:
+        raise ValueError("max_output_tokens must be an integer from 1 to 1024")
     body = {"model": model, "messages": messages, "tools": tools,
             "tool_choice": "auto", "parallel_tool_calls": False, "temperature": 0.1,
             "stream": False, "max_tokens": max_output_tokens}
@@ -289,15 +292,17 @@ def _model_message(payload: object) -> dict:
 def _complete(endpoint: str, model: str, messages: list[dict], tools: list[dict],
               *, cancel_event: threading.Event | None = None,
               metrics_callback: MetricsCallback | None = None,
-              performance_profile: str = "efficient", reasoning: str = "auto") -> dict:
+              performance_profile: str = "efficient", reasoning: str = "auto",
+              max_output_tokens: int = MAX_OUTPUT_TOKENS) -> dict:
     parsed = urlsplit(endpoint)
     if (parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or not parsed.port
             or parsed.username or parsed.password or parsed.query or parsed.fragment):
         raise ValueError("Model endpoint must be an already running http://127.0.0.1:port service")
+    started = time.perf_counter()
+    body = encode_model_request(build_model_request(model, messages, tools, reasoning=reasoning,
+                                max_output_tokens=max_output_tokens), performance_profile=performance_profile)
     connection = _ModelConnection(parsed.port, cancel_event)
     path = parsed.path.rstrip("/") + "/chat/completions"
-    started = time.perf_counter()
-    body = encode_model_request(build_model_request(model, messages, tools, reasoning=reasoning), performance_profile=performance_profile)
     payload = None
     raw = b""
     outcome = "error"
