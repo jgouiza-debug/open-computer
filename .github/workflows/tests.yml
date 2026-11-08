@@ -21,7 +21,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install package
-        run: python -m pip install .
+        run: python -m pip install ".[test]"
       - name: Run unit and integration tests
         run: python -m unittest discover -s tests -v
       - name: Check command-line entry points
@@ -31,3 +31,21 @@ jobs:
           python -m opencomputer.model_client --help
           python -m opencomputer.setup --help
           python -m opencomputer.setup doctor --offline
+
+  rust-tests:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: native
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust checks
+        run: rustup component add rustfmt clippy
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run protocol and core tests
+        run: cargo test --locked -j 2
+      - name: Check warnings
+        run: cargo clippy --locked --all-targets -j 2 -- -D warnings
+      - name: Build optional native helper
+        run: cargo build --locked --release -j 2

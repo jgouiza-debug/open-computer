@@ -405,7 +405,10 @@ class McpTests(unittest.TestCase):
                     "usage": {"prompt_tokens": 150, "completion_tokens": 12, "total_tokens": 162,
                               "prompt_tokens_details": {"cached_tokens": 100},
                               "completion_tokens_details": {"reasoning_tokens": 4},
-                              "secret": "must never appear in metrics"}}).encode()
+                              "secret": "must never appear in metrics"},
+                    "timings": {"cache_n": 100, "prompt_n": 50, "prompt_ms": 25.5,
+                                "predicted_n": 12, "predicted_ms": 200,
+                                "prompt_per_second": 1960.8, "vision_secret": "must never appear in metrics"}}).encode()
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(raw)))
                 self.end_headers()
@@ -429,8 +432,24 @@ class McpTests(unittest.TestCase):
                          "total_tokens": 162, "cached_tokens": 100, "reasoning_tokens": 4})
         self.assertEqual(events[0]["usage_source"], "server")
         self.assertEqual(events[0]["requested_reasoning"], "auto")
+        self.assertEqual(events[0]["server_timings"], {"cache_n": 100, "prompt_n": 50, "prompt_ms": 25.5,
+                         "predicted_n": 12, "predicted_ms": 200, "prompt_per_second": 1960.8})
+        self.assertEqual(events[0]["timings_source"], "server")
         self.assertGreater(events[0]["request_bytes"], 0)
         self.assertNotIn("must never", json.dumps(events))
+
+    def test_server_timings_reject_invalid_or_invented_counters(self) -> None:
+        from opencomputer.model_client import _server_timings
+
+        for payload in (None, {}, {"timings": []}):
+            self.assertEqual(_server_timings(payload), {})
+        self.assertEqual(_server_timings({"timings": {"cache_n": True, "prompt_n": 1.2,
+                         "predicted_n": -1, "prompt_ms": float("inf"), "predicted_ms": float("nan"),
+                         "prompt_per_second": "10", "predicted_per_second": -1,
+                         "prompt_per_token_ms": None, "vision_encode_ms": 123}}), {})
+        self.assertEqual(_server_timings({"timings": {"prompt_ms": 0, "prompt_n": 0,
+                         "predicted_per_token_ms": 2.5}}),
+                         {"prompt_n": 0, "prompt_ms": 0, "predicted_per_token_ms": 2.5})
 
     def test_cancel_interrupts_waiting_http_request(self) -> None:
         entered, release, cancel = threading.Event(), threading.Event(), threading.Event()

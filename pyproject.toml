@@ -11,6 +11,9 @@ requires-python = ">=3.11"
 license = "MIT"
 dependencies = ["Pillow>=12.2,<13"]
 
+[project.optional-dependencies]
+test = ["jsonschema>=4.23,<5"]
+
 [project.scripts]
 opencomputer = "opencomputer.app:main"
 opencomputer-mcp = "opencomputer.mcp:main"

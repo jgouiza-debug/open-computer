@@ -158,8 +158,35 @@ comparison. See [measurements, configuration, and limitations](docs/performance.
 ## Development
 
 ```powershell
+.\.venv\Scripts\python.exe -m pip install ".[test]"
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
+
+### Optional Rust observation helper
+
+The experimental Rust helper reads a selected window's pixels and bounded Windows
+UI Automation control tree. It cannot press keys, click, or arm a session. The
+regular Python controller remains the default; installing the Python package does
+not build or enable this helper.
+
+On Windows with Rust and the Visual Studio C++ build tools installed:
+
+```powershell
+cargo build --manifest-path native/Cargo.toml --locked --release -j 2
+cargo test --manifest-path native/Cargo.toml --locked -j 2
+```
+
+Use `opencomputer.native_client.NativeClient` with the absolute path to
+`native/target/release/opencomputer-native.exe`. Selected-window calls require both
+the HWND and its expected process ID. See the [wire contract](docs/native-protocol.md)
+for limits, password redaction, timeouts, and action-authority boundaries.
+
+Compact control text is intended to reduce model input for ordinary Windows
+controls. Canvas content and incomplete accessibility trees still need images.
+This helper does not yet switch the production model runner to semantic input,
+and no model speedup from Rust or UI Automation is claimed.
+The [owned-window validation results](docs/native-validation.md) record pixel
+agreement, password redaction, and measured observation time.
 
 Tests with fake backends do not move the real mouse. The separately invoked native
 smoke test uses an isolated fixture window. A Windows run has verified screenshot

@@ -1,0 +1,653 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Open Computer native read-only protocol v1",
+  "description": "Canonical payload contract; transport and semantic invariants are in native-protocol.md. All $refs are local.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/request"
+    },
+    {
+      "$ref": "#/$defs/response"
+    }
+  ],
+  "$defs": {
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[\\x20-\\x7e]+$"
+    },
+    "window_id": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,19}$"
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "window_id": {
+          "$ref": "#/$defs/window_id"
+        },
+        "expected_pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        }
+      },
+      "required": [
+        "window_id",
+        "expected_pid"
+      ]
+    },
+    "rect": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "type": "integer",
+          "minimum": -2147483648,
+          "maximum": 2147483647
+        },
+        "y": {
+          "type": "integer",
+          "minimum": -2147483648,
+          "maximum": 2147483647
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8388608
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8388608
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+      ]
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/window_id"
+        },
+        "pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "rect": {
+          "$ref": "#/$defs/rect"
+        }
+      },
+      "required": [
+        "id",
+        "pid",
+        "title",
+        "rect"
+      ]
+    },
+    "request": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "v": {
+              "const": 1
+            },
+            "id": {
+              "$ref": "#/$defs/request_id"
+            },
+            "method": {
+              "const": "hello"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {},
+              "required": []
+            }
+          },
+          "required": [
+            "v",
+            "id",
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "v": {
+              "const": 1
+            },
+            "id": {
+              "$ref": "#/$defs/request_id"
+            },
+            "method": {
+              "const": "list_windows"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {},
+              "required": []
+            }
+          },
+          "required": [
+            "v",
+            "id",
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "v": {
+              "const": 1
+            },
+            "id": {
+              "$ref": "#/$defs/request_id"
+            },
+            "method": {
+              "const": "inspect_window"
+            },
+            "params": {
+              "$ref": "#/$defs/target"
+            }
+          },
+          "required": [
+            "v",
+            "id",
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "v": {
+              "const": 1
+            },
+            "id": {
+              "$ref": "#/$defs/request_id"
+            },
+            "method": {
+              "const": "capture_window"
+            },
+            "params": {
+              "$ref": "#/$defs/target"
+            }
+          },
+          "required": [
+            "v",
+            "id",
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "v": {
+              "const": 1
+            },
+            "id": {
+              "$ref": "#/$defs/request_id"
+            },
+            "method": {
+              "const": "inspect_accessibility"
+            },
+            "params": {
+              "$ref": "#/$defs/target"
+            }
+          },
+          "required": [
+            "v",
+            "id",
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "hello": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "engine": {
+          "const": "opencomputer-native"
+        },
+        "version": {
+          "type": "string",
+          "maxLength": 32,
+          "minLength": 1
+        },
+        "platform": {
+          "const": "windows"
+        },
+        "read_only": {
+          "const": true
+        },
+        "supports_input": {
+          "const": false
+        },
+        "supports_arm": {
+          "const": false
+        },
+        "methods": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 4,
+          "items": {
+            "enum": [
+              "hello",
+              "list_windows",
+              "inspect_window",
+              "capture_window",
+              "inspect_accessibility"
+            ]
+          },
+          "allOf": [
+            {
+              "contains": {
+                "const": "hello"
+              }
+            },
+            {
+              "contains": {
+                "const": "list_windows"
+              }
+            },
+            {
+              "contains": {
+                "const": "inspect_window"
+              }
+            },
+            {
+              "contains": {
+                "const": "capture_window"
+              }
+            }
+          ]
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_request_bytes": {
+              "const": 16384
+            },
+            "max_response_bytes": {
+              "const": 33554432
+            },
+            "max_capture_pixels": {
+              "const": 8388608
+            },
+            "max_windows": {
+              "const": 512
+            },
+            "max_title_chars": {
+              "const": 2048
+            },
+            "max_accessibility_nodes": {
+              "const": 256
+            },
+            "max_accessibility_depth": {
+              "const": 12
+            },
+            "max_accessibility_text_chars": {
+              "const": 8192
+            }
+          },
+          "required": [
+            "max_request_bytes",
+            "max_response_bytes",
+            "max_capture_pixels",
+            "max_windows",
+            "max_title_chars",
+            "max_accessibility_nodes",
+            "max_accessibility_depth",
+            "max_accessibility_text_chars"
+          ]
+        }
+      },
+      "required": [
+        "engine",
+        "version",
+        "platform",
+        "read_only",
+        "supports_input",
+        "supports_arm",
+        "methods",
+        "limits"
+      ]
+    },
+    "window_list": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "windows": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {
+            "$ref": "#/$defs/window"
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "windows",
+        "truncated"
+      ]
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "window": {
+          "$ref": "#/$defs/window"
+        },
+        "image_base64": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 33554432,
+          "pattern": "^[A-Za-z0-9+/]*={0,2}$"
+        },
+        "mime_type": {
+          "const": "image/png"
+        },
+        "image_width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8388608
+        },
+        "image_height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8388608
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "capture_ms": {
+              "type": "number",
+              "minimum": 0
+            },
+            "encode_ms": {
+              "type": "number",
+              "minimum": 0
+            },
+            "cache_hit": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "capture_ms",
+            "encode_ms",
+            "cache_hit"
+          ]
+        }
+      },
+      "required": [
+        "window",
+        "image_base64",
+        "mime_type",
+        "image_width",
+        "image_height",
+        "metrics"
+      ]
+    },
+    "element_id": {
+      "type": "string",
+      "pattern": "^e[0-9]{1,3}$"
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/element_id"
+        },
+        "parent": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/element_id"
+            }
+          ]
+        },
+        "role": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "value": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "bounds": {
+          "$ref": "#/$defs/rect"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "focusable": {
+          "type": "boolean"
+        },
+        "password": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "parent",
+        "role",
+        "bounds",
+        "enabled",
+        "focusable",
+        "password"
+      ],
+      "if": {
+        "properties": {"password": {"enum": [true, null]}}
+      },
+      "then": {
+        "not": {"anyOf": [{"required": ["name"]}, {"required": ["value"]}]}
+      }
+    },
+    "accessibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "snapshot_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "window": {
+          "$ref": "#/$defs/window"
+        },
+        "nodes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/node"
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "truncation_reasons": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "node_limit",
+              "depth_limit",
+              "text_limit",
+              "time_limit"
+            ]
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "inspect_ms": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "inspect_ms"
+          ]
+        }
+      },
+      "required": [
+        "snapshot_id",
+        "window",
+        "nodes",
+        "truncated",
+        "truncation_reasons",
+        "metrics"
+      ]
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "enum": [
+            "invalid_request",
+            "unknown_method",
+            "invalid_params",
+            "not_found",
+            "pid_mismatch",
+            "window_changed",
+            "not_supported",
+            "capture_failed",
+            "accessibility_unavailable",
+            "resource_limit",
+            "internal_error"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "retryable": {
+          "const": false
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ]
+    },
+    "response": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "v": {
+              "const": 1
+            },
+            "id": {
+              "$ref": "#/$defs/request_id"
+            },
+            "ok": {
+              "const": true
+            },
+            "result": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/hello"
+                },
+                {
+                  "$ref": "#/$defs/window_list"
+                },
+                {
+                  "$ref": "#/$defs/window"
+                },
+                {
+                  "$ref": "#/$defs/capture"
+                },
+                {
+                  "$ref": "#/$defs/accessibility"
+                }
+              ]
+            }
+          },
+          "required": [
+            "v",
+            "id",
+            "ok",
+            "result"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "v": {
+              "const": 1
+            },
+            "id": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/request_id"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "ok": {
+              "const": false
+            },
+            "error": {
+              "$ref": "#/$defs/error"
+            }
+          },
+          "required": [
+            "v",
+            "id",
+            "ok",
+            "error"
+          ]
+        }
+      ]
+    }
+  }
+}

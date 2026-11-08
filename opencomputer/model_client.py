@@ -10,6 +10,7 @@ import http.client
 import io
 import json
 import logging
+import math
 from pathlib import Path
 import socket
 import threading
@@ -114,6 +115,24 @@ def _server_usage(payload: object) -> dict:
         detail = usage.get(source)
         value = detail.get(field) if isinstance(detail, dict) else None
         if type(value) is int and 0 <= value <= 9_007_199_254_740_991:
+            result[name] = value
+    return result
+
+
+def _server_timings(payload: object) -> dict:
+    """Keep only actual, finite timing counters supplied by the model server."""
+    timings = payload.get("timings") if isinstance(payload, dict) else None
+    if not isinstance(timings, dict):
+        return {}
+    result = {}
+    for name in ("cache_n", "prompt_n", "predicted_n"):
+        value = timings.get(name)
+        if type(value) is int and 0 <= value <= 9_007_199_254_740_991:
+            result[name] = value
+    for name in ("prompt_ms", "predicted_ms", "prompt_per_token_ms", "predicted_per_token_ms",
+                 "prompt_per_second", "predicted_per_second"):
+        value = timings.get(name)
+        if type(value) in (int, float) and 0 <= value <= 9_007_199_254_740_991 and math.isfinite(value):
             result[name] = value
     return result
 
@@ -302,9 +321,11 @@ def _complete(endpoint: str, model: str, messages: list[dict], tools: list[dict]
         if watcher is not None:
             watcher.join(timeout=0.2)
         usage = _server_usage(payload)
+        timings = _server_timings(payload)
         _emit_metrics(metrics_callback, {"phase": "model", "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
                       "request_bytes": len(body), "response_bytes": len(raw), "status": outcome,
                       "server_usage": usage, "usage_source": "server" if usage else "unavailable",
+                      "server_timings": timings, "timings_source": "server" if timings else "unavailable",
                       "requested_reasoning": reasoning})
 
 
