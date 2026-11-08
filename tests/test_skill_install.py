@@ -61,11 +61,11 @@ class SkillInstallTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def ps(self, body):
+    def ps(self, body, executable=None):
         script = self.root / "test-script.ps1"
         script.write_text("$ErrorActionPreference='Stop'\n. " + quote(INSTALLER) +
             " -PortablePath " + quote(self.candidate) + "\n" + body, encoding="utf-8-sig")
-        result = subprocess.run([POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+        result = subprocess.run([executable or POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
             cwd=self.root, capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", errors="replace"))
         return result.stdout
@@ -84,6 +84,19 @@ class SkillInstallTests(unittest.TestCase):
         self.assertFalse(receipt["session_started"])
         self.assertEqual(unrelated.read_text(), "preserve")
         self.assertFalse(list(skills.glob(".opencomputer-*")))
+
+    def test_verification_path_is_not_longer_than_final_runtime_on_ps5_and_ps7(self):
+        shells = list(dict.fromkeys(filter(None, (shutil.which("powershell.exe"), shutil.which("pwsh")))))
+        for index, shell in enumerate(shells):
+            with self.subTest(shell=Path(shell).name):
+                skills = self.root / ("Windows PowerShell skills " + str(index))
+                final_exe = skills / "open-computer/runtime/OpenComputer/OpenComputerCLI.exe"
+                self.ps(f"$final={quote(final_exe)}; $verify={{param($p) "
+                    "$staged=Join-Path $p 'runtime/OpenComputer/OpenComputerCLI.exe'; "
+                    "if ($staged.Length -gt $final.Length) {throw 'Verification lengthens runtime path'} }; "
+                    f"Install-CheckedSkill {quote(self.candidate)} {quote(skills)} $false $verify | Out-Null; "
+                    f"Install-CheckedSkill {quote(self.candidate)} {quote(skills)} $true $verify | Out-Null", executable=shell)
+                self.assertFalse(list(skills.glob(".oc-*")))
 
     def test_tamper_and_unlisted_files_reject_before_verifier(self):
         for mode in ("hash", "extra"):

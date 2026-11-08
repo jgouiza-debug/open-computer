@@ -171,7 +171,7 @@ function Test-Runtime([string]$Skill) {
             $stdout = $process.StandardOutput.ReadToEndAsync(); $stderr = $process.StandardError.ReadToEndAsync()
             if (-not $process.WaitForExit(15000)) { $process.Kill(); $process.WaitForExit(2000) | Out-Null; throw 'Portable offline runtime verification timed out.' }
             $stdout.GetAwaiter().GetResult() | Out-Null; $stderr.GetAwaiter().GetResult() | Out-Null
-            if ($process.ExitCode -ne 0) { throw 'Portable offline runtime verification failed.' }
+            if ($process.ExitCode -ne 0) { throw 'Portable offline runtime verification failed. Check dependencies or choose a shorter -SkillRoot path.' }
         } finally {
             if ($started -and -not $process.HasExited) { $process.Kill(); $process.WaitForExit(2000) | Out-Null }
             $process.Dispose()
@@ -181,7 +181,7 @@ function Test-Runtime([string]$Skill) {
 function Remove-OwnedStage([string]$Path, [string]$Parent) {
     $full = Get-FullPath $Path
     if ([IO.Path]::GetDirectoryName($full).TrimEnd('\') -ne (Get-FullPath $Parent).TrimEnd('\') -or
-        [IO.Path]::GetFileName($full) -notmatch '^\.opencomputer-(stage|backup)-[a-f0-9]{32}$') { throw 'Cleanup boundary refused.' }
+        [IO.Path]::GetFileName($full) -notmatch '^(?:\.opencomputer-(stage|backup)-[a-f0-9]{32}|\.oc-[a-f0-9]{8})$') { throw 'Cleanup boundary refused.' }
     Assert-PlainPath $full
     if (Test-Path -LiteralPath $full) { Remove-Item -LiteralPath $full -Recurse -Force }
 }
@@ -205,9 +205,11 @@ function Install-CheckedSkill([string]$Candidate, [string]$Root, [bool]$Replace,
         if ($old.kind -ne 'opencomputer-skill-v1') { throw 'Existing skill is unmanaged.' }
         Assert-NoActiveRuntime $destination
     }
-    $stage = Join-Path $rootPath ('.opencomputer-stage-' + [guid]::NewGuid().ToString('N'))
+    # Native imports can fail near MAX_PATH. Never lengthen the runtime path
+    # beyond its final "open-computer" directory merely to verify it.
+    $stage = Join-Path $rootPath ('.oc-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
     $backup = Join-Path $rootPath ('.opencomputer-backup-' + [guid]::NewGuid().ToString('N'))
-    [IO.Directory]::CreateDirectory($stage) | Out-Null
+    New-Item -ItemType Directory -Path $stage -ErrorAction Stop | Out-Null
     try {
         Copy-Inventory $Candidate $stage $manifest.files
         Copy-Item -LiteralPath (Join-Path $Candidate 'install-manifest.json') -Destination $stage
