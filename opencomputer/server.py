@@ -24,6 +24,7 @@ class ControllerProtocol(Protocol):
     def list_windows(self) -> list: ...
     def select_window(self, window_id: str) -> dict: ...
     def get_window_state(self) -> dict: ...
+    def get_semantic_state(self) -> dict: ...
     def execute(self, action: str, observation_id: str, **params: object) -> dict: ...
     def stop(self) -> dict: ...
 
@@ -44,6 +45,7 @@ def tool_definitions() -> list[dict]:
         ("list_windows", "List visible windows that can be selected.", {}, []),
         ("select_window", "Select a window; selection disarms input.", {"window_id": text}, ["window_id"]),
         ("get_window_state", "Capture selected window and obtain one fresh, single-use observation ID.", {}, []),
+        ("get_semantic_state", "Read bounded accessibility controls as text; obtain one single-use observation ID. Use get_window_state if unavailable or insufficient.", {}, []),
         ("click", "Click once using screenshot-relative coordinates.", {**xy, "button": {"enum": ["left", "right", "middle"]}, "count": {"type": "integer", "minimum": 1, "maximum": 2}}, ["x", "y"]),
         ("move", "Move cursor within the selected screenshot.", xy, ["x", "y"]),
         ("scroll", "Scroll at screenshot-relative x,y by signed wheel detents.", {**xy, "delta": integer}, ["x", "y", "delta"]),
@@ -97,7 +99,7 @@ def dispatch(controller: ControllerProtocol, name: str, arguments: dict) -> obje
             raise ToolError("invalid_arguments", f"{key} above maximum")
     if name == "select_window":
         return controller.select_window(**arguments)
-    if name in {"status", "list_windows", "get_window_state", "stop"}:
+    if name in {"status", "list_windows", "get_window_state", "get_semantic_state", "stop"}:
         return getattr(controller, name)()
     return controller.execute(name, **arguments)
 

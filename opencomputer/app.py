@@ -76,23 +76,56 @@ class SafetyHotkey:
         self.done.set()
 
 
+def semantic_status_text(status: dict[str, Any]) -> str:
+    """Display fixed states only; helper paths/provider diagnostics stay private."""
+    provider = status.get("semantic_provider")
+    if not isinstance(provider, dict) or provider.get("configured") is not True:
+        return "Semantic helper: off"
+    descriptions = {"uninitialized": "configured (starts on first semantic request)",
+                    "ready": "ready", "unavailable": "unavailable (restart panel to retry)",
+                    "closed": "closed", "disabled": "off"}
+    return "Semantic helper: " + descriptions.get(provider.get("state"), "unavailable")
+
+
 class OpenComputerApp:
     def __init__(self, root: tk.Tk, *, demo: bool = False, port: int = 8787,
-                 server_enabled: bool = True, controller: Any = None) -> None:
+                 server_enabled: bool = True, controller: Any = None,
+                 native_helper: str | Path | None = None) -> None:
         from .controller import Controller
         from .backend import FakeBackend
 
         self.root = root
         self.demo = demo
         self.events: queue.Queue[dict[str, Any]] = queue.Queue()
+        if native_helper is not None and (demo or controller is not None):
+            raise ValueError("Native helper cannot be combined with a demo or injected controller")
+        options = {}
+        if native_helper is not None:
+            from .semantic import NativeSemanticProvider
+            from .setup import validate_native_helper
+            options["semantic_provider"] = NativeSemanticProvider(validate_native_helper(native_helper))
         self.controller = controller or Controller(
-            backend=FakeBackend() if demo else None, event_sink=self.events.put)
+            backend=FakeBackend() if demo else None, event_sink=self.events.put, **options)
         self.server: Any = None
         self.overlay: TargetOverlay | None = None
         self.windows: list[dict[str, Any]] = []
         self.closed = False
         self.overlay_failed = False
         self._last_state: dict[str, Any] = {}
+        self.hotkey: SafetyHotkey | None = None
+        try:
+            self._initialize_ui(server_enabled=server_enabled, port=port)
+        except BaseException:
+            # main cannot receive this instance when __init__ raises. Reap
+            # resources here, including a helper lazily started by the server.
+            try:
+                self.close()
+            except Exception:
+                pass  # Preserve the original startup failure after teardown.
+            raise
+
+    def _initialize_ui(self, *, server_enabled: bool, port: int) -> None:
+        root, demo = self.root, self.demo
         self._build_ui()
         try:
             self.overlay = TargetOverlay(root)
@@ -213,6 +246,9 @@ class OpenComputerApp:
                  text="Paste into your client's MCP settings; keep this panel running.",
                  bg=PANEL, fg=MUTED, font=("Segoe UI", 9), wraplength=440,
                  justify="left").pack(anchor="w", pady=(7, 0))
+        self.semantic_status = tk.StringVar(value="Semantic helper: off")
+        tk.Label(connection_card, textvariable=self.semantic_status, bg=PANEL, fg=MUTED,
+                 font=("Segoe UI", 9), wraplength=600, justify="left").pack(anchor="w", pady=(4, 0))
         log_card = tk.Frame(main, bg=PANEL, padx=22, pady=18)
         log_card.pack(fill="both", expand=True)
         tk.Label(log_card, text="Activity", bg=PANEL, fg=TEXT,
@@ -304,6 +340,7 @@ class OpenComputerApp:
     def _sync_state(self) -> None:
         state = self.controller.status()
         self._last_state = state
+        self.semantic_status.set(semantic_status_text(state))
         selected = state.get("selected_window")
         if selected:
             match = next((index for index, window in enumerate(self.windows)
@@ -357,13 +394,27 @@ class OpenComputerApp:
         if self.closed:
             return
         self.closed = True
-        self.controller.stop()
-        self.hotkey.close()
-        if self.server:
-            self.server.close()
-        if self.overlay:
-            self.overlay.destroy()
-        self.root.destroy()
+        try:
+            self.controller.stop()
+        finally:
+            try:
+                try:
+                    if self.hotkey:
+                        self.hotkey.close()
+                finally:
+                    if self.server:
+                        self.server.close()
+            finally:
+                try:
+                    close_controller = getattr(self.controller, "close", None)
+                    if close_controller is not None:
+                        close_controller()
+                finally:
+                    try:
+                        if self.overlay:
+                            self.overlay.destroy()
+                    finally:
+                        self.root.destroy()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -372,18 +423,38 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=8787, help="Local HTTP server port (0 chooses an available port)")
     parser.add_argument("--no-server", action="store_true", help="Show the panel without an agent server")
     parser.add_argument("--smoke-test", action="store_true", help="Open a demo panel briefly and exit without arming")
+    parser.add_argument("--native-helper", type=Path,
+                        help="Explicit absolute .exe path for optional read-only semantic observations")
     args = parser.parse_args(argv)
+    if args.native_helper is not None:
+        if args.demo or args.smoke_test:
+            parser.error("--native-helper cannot be combined with --demo or --smoke-test")
+        from .setup import validate_native_helper
+        try:
+            args.native_helper = validate_native_helper(args.native_helper)
+        except (ValueError, OSError) as exc:
+            parser.error(str(exc))
     if sys.platform == "win32":
         try:
             ctypes.WinDLL("user32").SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
         except (AttributeError, OSError):
             pass
     root = tk.Tk()
-    app = OpenComputerApp(root, demo=args.demo or args.smoke_test, port=args.port,
-                          server_enabled=not args.no_server)
-    if args.smoke_test:
-        root.after(1600, app.close)
-    root.mainloop()
+    app = None
+    try:
+        app = OpenComputerApp(root, demo=args.demo or args.smoke_test, port=args.port,
+                              server_enabled=not args.no_server, native_helper=args.native_helper)
+        if args.smoke_test:
+            root.after(1600, app.close)
+        root.mainloop()
+    finally:
+        if app is not None:
+            app.close()
+        else:
+            try:
+                root.destroy()
+            except tk.TclError:
+                pass  # A failed constructor already tears down its Tk root.
     return 0
 
 

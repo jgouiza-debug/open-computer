@@ -93,18 +93,20 @@ have false truncation and an empty reasons array. Failure to establish a usable
 root returns `accessibility_unavailable`. Partial trees must never be described
 as complete representations of the screen.
 
-## Authority and future integration
+## Authority and integration
 
 Python continues to own local arming, selected HWND/PID, controller instance and
 generation, fresh observation IDs, cancellation, exact full-image renewal, and
 all native input checks. A Rust screenshot or tree alone authorizes no action.
-The first adapter exposes read-only methods and cannot be used as an input
-backend. Future semantic action resolution requires its own reviewed contract
-binding snapshot, Python authority receipt, fresh control identity and bounds;
-v1 deliberately exposes no InvokePattern or text-setting method.
+The adapter exposes read-only methods and cannot be used as an input backend.
+The Python controller binds semantic receipts to original pixels and the
+canonical control table. Before input it rechecks both, window identity,
+geometry, cancellation and the local authority generation. The native protocol
+deliberately exposes no InvokePattern or text-setting method.
 
-A later explicit text-first runner may send the bounded control tree to the
-model and use an image or crop when controls are unavailable or insufficient.
+The optional semantic runner sends the bounded control table to the model.
+Automatic mode can obtain a fresh image when controls are unavailable or the
+model requests an image; semantic-only mode never sends images.
 Names and values remain untrusted application data. Full-frame authority stays
 local. A compact tree is not a generated narration and cannot establish that a
 canvas, custom widget, or unlabeled control has been understood.

@@ -24,7 +24,8 @@ latency or token improvement has been measured for this helper yet.
 
 The Python controller remains the production input authority. The optional helper
 provides observation only; it has no click, typing, or arming operation. The
-production model runner still uses images.
+production model runner defaults to images; version 0.1.3 adds optional semantic
+and automatic modes, described in [the integration guide](semantic.md).
 
 For a disposable window with standard Windows controls:
 

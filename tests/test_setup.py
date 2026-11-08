@@ -14,6 +14,27 @@ from opencomputer import setup
 
 
 class SetupTests(unittest.TestCase):
+    def test_explicit_native_helper_validation_never_searches_or_executes(self):
+        with tempfile.TemporaryDirectory(prefix="helper path ") as directory:
+            helper = Path(directory) / "observer.exe"
+            helper.touch()
+            self.assertEqual(setup.validate_native_helper(helper), helper.resolve())
+            for invalid in ("observer.exe", helper.parent, helper.with_suffix(".cmd"), helper.parent / "missing.exe"):
+                with self.assertRaises(ValueError):
+                    setup.validate_native_helper(invalid)
+
+    @patch.object(setup, "dependency_checks", return_value=[{"name": "deps", "ok": True}])
+    def test_offline_doctor_helper_stat_does_not_execute_or_connect(self, _checks):
+        with tempfile.TemporaryDirectory() as directory, patch.object(subprocess, "Popen") as launch:
+            helper = Path(directory) / "observer.exe"
+            helper.touch()
+            result = setup.run_doctor(include_live=False, native_helper=helper,
+                client_factory=lambda _: self.fail("Offline doctor must not connect"))
+        self.assertTrue(result["ok"])
+        self.assertIn("protocol not checked", result["checks"][-1]["detail"])
+        self.assertNotIn(str(helper), json.dumps(result))
+        launch.assert_not_called()
+
     def test_doctor_rejects_untested_pillow_versions(self):
         for version, expected in (("12.1.0", False), ("12.2.0", True), ("13.0.0", False)):
             with self.subTest(version=version), patch.object(setup.metadata, "version", return_value=version):

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.3 — 2026-11-07
+
+- Add an optional read-only Rust helper for native capture and bounded Windows
+  UI Automation observations, with password redaction and an owned-child timeout.
+- Expose compact semantic observations through MCP and the local model runner.
+  Keep image mode as the default; semantic-only mode never sends images, while
+  automatic mode can request an image when controls are insufficient.
+- Bind semantic action receipts to both original pixels and control text, and
+  revalidate both in the Python controller before input.
+- Add an explicit native-helper option, status reporting, and a separate semantic
+  launcher when a prebuilt helper is included. No helper or model starts during
+  installation.
+- Add an opt-in image-versus-semantic benchmark reporting actual model counters
+  when available. Offline request-size reductions are not token or latency claims.
+
 ## 0.1.2 — 2026-11-07
 
 - Reuse PNG encoding for an exactly matching fresh capture, with a bounded

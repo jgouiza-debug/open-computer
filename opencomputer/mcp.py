@@ -80,8 +80,18 @@ class LocalClient:
         return self.request("POST", "/tools/call", {"name": name, "arguments": {} if arguments is None else arguments})["result"]
 
 
-def content_blocks(result: object) -> list[dict]:
+def content_blocks(result: object, *, tool_name: str | None = None) -> list[dict]:
     """Expose captures as native MCP image blocks plus textual observation metadata."""
+    if tool_name == "get_semantic_state" or isinstance(result, dict) and result.get("observation_kind") == "semantic":
+        from .semantic import SemanticError, semantic_projection
+
+        if not isinstance(result, dict) or result.get("observation_kind") != "semantic":
+            raise ClientError("invalid_response", "Local service returned no semantic observation")
+        try:
+            projection = semantic_projection(result)
+        except (SemanticError, KeyError, TypeError) as exc:
+            raise ClientError("invalid_response", "Local service returned an invalid semantic observation") from exc
+        return [{"type": "text", "text": json.dumps(projection, separators=(",", ":"), ensure_ascii=False)}]
     if isinstance(result, dict) and "image_base64" in result:
         metadata = {key: value for key, value in result.items() if key != "image_base64"}
         return [{"type": "text", "text": json.dumps(metadata, separators=(",", ":"), ensure_ascii=False)},
@@ -121,7 +131,7 @@ def handle_message(message: object, client: LocalClient) -> dict | None:
             if not isinstance(params.get("name"), str) or not isinstance(params.get("arguments", {}), dict):
                 return {**response, "error": {"code": -32602, "message": "Invalid tool parameters"}}
             try:
-                result = {"content": content_blocks(client.call(params["name"], params.get("arguments", {}))), "isError": False}
+                result = {"content": content_blocks(client.call(params["name"], params.get("arguments", {})), tool_name=params["name"]), "isError": False}
             except ClientError as exc:
                 result = {"content": [{"type": "text", "text": json.dumps({"error": exc.code, "message": str(exc)})}], "isError": True}
         else:

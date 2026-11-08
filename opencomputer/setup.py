@@ -15,6 +15,17 @@ from .mcp import LocalClient
 from .server import DEFAULT_CONNECTION_PATH
 
 
+def validate_native_helper(path: str | Path) -> Path:
+    """Validate only an explicitly supplied local file; never search or execute."""
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        raise ValueError("Native helper must be an absolute path")
+    candidate = candidate.resolve()
+    if candidate.suffix.casefold() != ".exe" or not candidate.is_file():
+        raise ValueError("Native helper must be an existing .exe file")
+    return candidate
+
+
 def build_mcp_config(python_executable: str | Path | None = None,
                      package_root: str | Path | None = None) -> dict:
     """Return generic/Unsloth import JSON, without credentials or cwd assumptions."""
@@ -58,10 +69,19 @@ def dependency_checks() -> list[dict]:
 
 
 def run_doctor(connection_path: str | Path | None = None, include_live: bool = True,
-               client_factory: Callable[[Path], LocalClient] | None = None) -> dict:
+               client_factory: Callable[[Path], LocalClient] | None = None,
+               native_helper: str | Path | None = None) -> dict:
     """Read dependencies and live GUI status, exposing neither token nor raw errors."""
     path = Path(connection_path or DEFAULT_CONNECTION_PATH)
     checks = dependency_checks()
+    if native_helper is not None:
+        try:
+            validate_native_helper(native_helper)
+            checks.append({"name": "native_helper_file", "ok": True,
+                           "detail": "Explicit helper file exists; protocol not checked or executed"})
+        except (ValueError, OSError):
+            checks.append({"name": "native_helper_file", "ok": False,
+                           "detail": "Supply an absolute path to an existing native helper .exe"})
     gui = {"checked": include_live, "credential_file_present": path.is_file(),
            "running": False, "armed": None, "stopped": None, "backend": None}
     if include_live:
@@ -98,6 +118,8 @@ def main(argv: list[str] | None = None) -> int:
     doctor_parser = commands.add_parser("doctor", help="Check dependencies and live disarmed GUI")
     doctor_parser.add_argument("--offline", action="store_true", help="Check dependencies without contacting the GUI")
     doctor_parser.add_argument("--connection", type=Path, default=DEFAULT_CONNECTION_PATH)
+    doctor_parser.add_argument("--native-helper", type=Path,
+                               help="Check an explicit helper file only; never launch it")
     options = parser.parse_args(argv)
     if options.command == "config":
         try:
@@ -106,7 +128,8 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(str(exc))
         print(json.dumps(result, indent=2))
         return 0
-    result = run_doctor(options.connection, include_live=not options.offline)
+    result = run_doctor(options.connection, include_live=not options.offline,
+                        native_helper=options.native_helper)
     print(json.dumps(result, indent=2))
     return 0 if result["ok"] else 1
 

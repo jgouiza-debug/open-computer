@@ -54,6 +54,14 @@ Run this read-only check after starting the panel, keeping it disarmed:
 
 Use `doctor --offline` to check dependencies without contacting a running panel.
 
+For optional text/control observations, use an explicitly chosen Rust helper.
+If the extracted Windows source ZIP includes `native/bin/opencomputer-native.exe`,
+the installer also creates **start-open-computer-semantic.cmd**. Choose that
+launcher to enable the helper; the normal launcher keeps image observations.
+The helper starts only on the first semantic request. Selecting this launcher
+does not arm input or start a model. Manual paths, runner modes, and validation
+limits are described in [the semantic observation guide](docs/semantic.md).
+
 ## Components
 
 ```mermaid
@@ -183,8 +191,9 @@ for limits, password redaction, timeouts, and action-authority boundaries.
 
 Compact control text is intended to reduce model input for ordinary Windows
 controls. Canvas content and incomplete accessibility trees still need images.
-This helper does not yet switch the production model runner to semantic input,
-and no model speedup from Rust or UI Automation is claimed.
+The model runner can use it with `--observation-mode semantic` or `auto`;
+image mode remains the default. No model speedup from Rust or UI Automation is
+claimed without a measured model run.
 The [owned-window validation results](docs/native-validation.md) record pixel
 agreement, password redaction, and measured observation time.
 

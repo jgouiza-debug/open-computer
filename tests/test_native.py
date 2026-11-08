@@ -34,7 +34,8 @@ TREE = {"snapshot_id": "own-1", "window": WINDOW,
 
 
 class NativeTests(unittest.TestCase):
-    def make_child(self, mode: str = "valid", *, timeout: float = 0.5) -> NativeClient:
+    def make_child(self, mode: str = "valid", *, timeout: float = 0.5,
+                   cancel_event: threading.Event | None = None) -> NativeClient:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         path = Path(directory.name) / "fake child.py"
@@ -46,12 +47,13 @@ class NativeTests(unittest.TestCase):
                         " if method!='hello' and mode=='timeout': time.sleep(10)\n"
                         " result=hello if method=='hello' else ({'windows':[window],'truncated':False} if method=='list_windows' else (tree if method=='inspect_accessibility' else window))\n"
                         " reply={'v':1,'id':req['id'],'ok':True,'result':result}\n"
+                        " if method=='inspect_window' and mode=='business_error': reply={'v':1,'id':req['id'],'ok':False,'error':{'code':'accessibility_unavailable','message':'Unavailable','retryable':False}}\n"
                         " if method!='hello' and mode=='wrong_id': reply['id']='wrong'\n"
                         " if method!='hello' and mode=='duplicate': print('{\"v\":1,\"v\":1}',flush=True); continue\n"
                         " if method!='hello' and mode=='oversize': print('x'*33554433,flush=True); continue\n"
                         " if mode=='input': reply['result']=dict(hello,supports_input=True)\n"
                         " print(json.dumps(reply),flush=True)\n", encoding="utf-8")
-        child = NativeClient(sys.executable, ["-u", str(path)], timeout=timeout)
+        child = NativeClient(sys.executable, ["-u", str(path)], timeout=timeout, cancel_event=cancel_event)
         self.addCleanup(child.close)
         return child
 
@@ -114,6 +116,54 @@ class NativeTests(unittest.TestCase):
             self.assertIsNotNone(client._process.poll())
         finally:
             release.set()
+
+    def test_expected_business_error_retains_the_same_live_child(self) -> None:
+        client = self.make_child("business_error")
+        process = client._process
+        with self.assertRaises(NativeError) as caught:
+            client.call("inspect_window", **TARGET)
+        self.assertEqual(caught.exception.code, "accessibility_unavailable")
+        self.assertIsNone(process.poll())
+        self.assertEqual(client.call("list_windows"), {"windows": [WINDOW], "truncated": False})
+        self.assertIs(client._process, process)
+
+    def test_cancel_interrupts_active_call_without_respawn(self) -> None:
+        client = self.make_child("timeout", timeout=5)
+        cancellation = threading.Event()
+        timer = threading.Timer(0.05, cancellation.set)
+        started = time.monotonic()
+        timer.start()
+        try:
+            with self.assertRaises(NativeError) as caught:
+                client.call("inspect_window", **TARGET, cancel_event=cancellation)
+        finally:
+            timer.cancel()
+        self.assertEqual(caught.exception.code, "cancelled")
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertIsNotNone(client._process.poll())
+        with self.assertRaises(NativeError) as caught:
+            client.call("list_windows")
+        self.assertEqual(caught.exception.code, "closed")
+
+    def test_cancelled_lazy_start_never_spawns_or_waits_for_hello(self) -> None:
+        cancellation = threading.Event()
+        cancellation.set()
+        with patch.object(native_client.subprocess, "Popen") as spawn:
+            with self.assertRaises(NativeError) as caught:
+                NativeClient(sys.executable, cancel_event=cancellation)
+        self.assertEqual(caught.exception.code, "cancelled")
+        spawn.assert_not_called()
+        cancellation.clear()
+        timer = threading.Timer(0.05, cancellation.set)
+        timer.start()
+        started = time.monotonic()
+        try:
+            with self.assertRaises(NativeError) as caught:
+                self.make_child("hello_timeout", timeout=5, cancel_event=cancellation)
+        finally:
+            timer.cancel()
+        self.assertEqual(caught.exception.code, "cancelled")
+        self.assertLess(time.monotonic() - started, 1.5)
 
     def test_malformed_duplicate_and_oversized_replies_fail_closed(self) -> None:
         for mode in ("wrong_id", "duplicate", "oversize"):

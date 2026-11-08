@@ -22,6 +22,8 @@ METHODS = frozenset({"hello", "list_windows", "inspect_window", "capture_window"
 ERRORS = frozenset({"invalid_request", "unknown_method", "invalid_params", "not_found", "pid_mismatch",
                     "window_changed", "not_supported", "capture_failed", "accessibility_unavailable",
                     "resource_limit", "internal_error"})
+EXPECTED_ERRORS = frozenset({"not_found", "pid_mismatch", "window_changed", "not_supported",
+                             "capture_failed", "accessibility_unavailable", "resource_limit"})
 
 
 class NativeError(RuntimeError):
@@ -183,15 +185,38 @@ def _accessibility(value: object, target: dict) -> dict:
     return result
 
 
+def validate_accessibility(value: object, target: dict) -> dict:
+    """Validate a native tree, including redaction, identity and client bounds."""
+    return _accessibility(value, target)
+
+
+def _response(raw: bytes | Exception, identity: str) -> object:
+    if isinstance(raw, Exception):
+        raise NativeError("protocol_error", "Native output could not be read") from raw
+    reply = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs, parse_constant=_reject_constant)
+    _object(reply, {"v", "id", "ok"}, {"result", "error"})
+    if type(reply["v"]) is not int or reply["v"] != 1 or reply["id"] != identity or type(reply["ok"]) is not bool:
+        raise NativeError("protocol_error", "Native response envelope differs")
+    if reply["ok"]:
+        return _object(reply, {"v", "id", "ok", "result"})["result"]
+    error = _object(_object(reply, {"v", "id", "ok", "error"})["error"], {"code", "message", "retryable"})
+    if not isinstance(error["code"], str) or error["code"] not in ERRORS or error["retryable"] is not False:
+        raise NativeError("protocol_error", "Invalid native error")
+    raise NativeError(error["code"], _text(error["message"], 512))
+
+
 class NativeClient:
     """One serialized owned process; no input/arm methods or automatic retries."""
 
-    def __init__(self, executable: str | Path, args: Sequence[str] = (), *, timeout: float = 5.0) -> None:
+    def __init__(self, executable: str | Path, args: Sequence[str] = (), *, timeout: float = 5.0,
+                 cancel_event: threading.Event | None = None) -> None:
         if type(timeout) not in (int, float) or not 0 < timeout <= 30:
             raise ValueError("Native timeout must be in (0, 30]")
         path = Path(executable).resolve(strict=True)
         if not path.is_file() or isinstance(args, (str, bytes)) or any(not isinstance(arg, str) for arg in args):
             raise ValueError("Native executable and arguments must be explicit")
+        if cancel_event is not None and cancel_event.is_set():
+            raise NativeError("cancelled", "Native observation cancelled locally")
         self._timeout = float(timeout)
         self._lock, self._close_lock = threading.Lock(), threading.Lock()
         self._closed = False
@@ -207,7 +232,7 @@ class NativeClient:
         for reader in self._readers:
             reader.start()
         try:
-            self.hello = _hello(self._request("hello", {}))
+            self.hello = _hello(self._request("hello", {}, cancel_event=cancel_event))
         except BaseException:
             self.close()
             raise
@@ -241,15 +266,23 @@ class NativeClient:
         except (OSError, ValueError):
             return  # Pipe closure is expected during owned-child shutdown.
 
-    def _request(self, method: str, params: dict, *, timeout: float | None = None) -> object:
+    def _request(self, method: str, params: dict, *, timeout: float | None = None,
+                 cancel_event: threading.Event | None = None) -> object:
         with self._lock:
+            if cancel_event is not None and cancel_event.is_set():
+                raise NativeError("cancelled", "Native observation cancelled locally")
             if self._closed:
                 raise NativeError("closed", "Native observer is closed")
             self._sequence += 1
             identity = str(self._sequence)
             line = json.dumps({"v": 1, "id": identity, "method": method, "params": params}, separators=(",", ":"), allow_nan=False).encode("utf-8") + b"\n"
             deadline = time.monotonic() + (timeout if timeout is not None else self._timeout)
+            finished = threading.Event()
+            watcher = None
             try:
+                if cancel_event is not None:
+                    watcher = threading.Thread(target=self._cancel_request, args=(cancel_event, finished), daemon=True)
+                    watcher.start()
                 if self._fault.is_set() or not self._replies.empty() or len(line) > MAX_REQUEST_BYTES:
                     raise NativeError("protocol_error", "Unexpected native output or oversized request")
                 written: queue.Queue[Exception | None] = queue.Queue(maxsize=1)
@@ -259,31 +292,38 @@ class NativeClient:
                 if write_error is not None:
                     raise NativeError("protocol_error", "Native request could not be written") from write_error
                 raw = self._replies.get(timeout=max(0, deadline - time.monotonic()))
-                if isinstance(raw, Exception):
-                    raise NativeError("protocol_error", "Native output could not be read") from raw
-                reply = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs, parse_constant=_reject_constant)
-                _object(reply, {"v", "id", "ok"}, {"result", "error"})
-                if type(reply["v"]) is not int or reply["v"] != 1 or reply["id"] != identity or type(reply["ok"]) is not bool or self._fault.is_set():
+                if self._fault.is_set():
                     raise NativeError("protocol_error", "Native response envelope differs")
-                if reply["ok"]:
-                    _object(reply, {"v", "id", "ok", "result"})
-                    return reply["result"]
-                _object(reply, {"v", "id", "ok", "error"})
-                error = _object(reply["error"], {"code", "message", "retryable"})
-                if not isinstance(error["code"], str) or error["code"] not in ERRORS or error["retryable"] is not False:
-                    raise NativeError("protocol_error", "Invalid native error")
-                raise NativeError(error["code"], _text(error["message"], 512))
+                if cancel_event is not None and cancel_event.is_set():
+                    raise NativeError("cancelled", "Native observation cancelled locally")
+                return _response(raw, identity)
             except queue.Empty as exc:
                 self.close()
+                if cancel_event is not None and cancel_event.is_set():
+                    raise NativeError("cancelled", "Native observation cancelled locally") from exc
                 raise NativeError("timeout", "Native observation exceeded its deadline") from exc
             except (OSError, ValueError, NativeError, RecursionError) as exc:
-                self.close()
+                if cancel_event is not None and cancel_event.is_set():
+                    self.close()
+                    raise NativeError("cancelled", "Native observation cancelled locally") from exc
+                if not isinstance(exc, NativeError) or exc.code not in EXPECTED_ERRORS:
+                    self.close()
                 if isinstance(exc, NativeError):
                     raise
                 raise NativeError("protocol_error", "Native transport failed") from exc
             except BaseException:
                 self.close()
                 raise
+            finally:
+                finished.set()
+                if watcher is not None:
+                    watcher.join(timeout=0.2)
+
+    def _cancel_request(self, cancellation: threading.Event, finished: threading.Event) -> None:
+        while not finished.wait(0.02):
+            if cancellation.is_set():
+                self.close()
+                return
 
     def _write_request(self, line: bytes, completed: queue.Queue[Exception | None]) -> None:
         try:
@@ -293,7 +333,8 @@ class NativeClient:
         except (OSError, ValueError) as exc:
             completed.put_nowait(exc)
 
-    def call(self, method: str, *, window_id: str | None = None, expected_pid: int | None = None) -> dict:
+    def call(self, method: str, *, window_id: str | None = None, expected_pid: int | None = None,
+             cancel_event: threading.Event | None = None) -> dict:
         """Call an advertised read-only method and validate its complete result."""
         if method not in METHODS or method == "hello" or method not in self.hello["methods"]:
             raise NativeError("not_supported", "Native read-only method is unavailable")
@@ -303,7 +344,7 @@ class NativeClient:
             _window({"id": window_id, "pid": expected_pid, "title": "", "rect": {"x": 0, "y": 0, "width": 1, "height": 1}})
         elif window_id is not None or expected_pid is not None:
             raise ValueError("list_windows takes no target")
-        result = self._request(method, params)
+        result = self._request(method, params, cancel_event=cancel_event)
         try:
             if method == "inspect_window":
                 return _window(result, params)

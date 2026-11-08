@@ -36,6 +36,15 @@ $mcpLauncher = '@echo off' + "`r`n" + '"%~dp0.venv\Scripts\python.exe" -P -m ope
 [System.IO.File]::WriteAllText((Join-Path $repoRoot "start-open-computer.cmd"), $startLauncher, [System.Text.Encoding]::Default)
 [System.IO.File]::WriteAllText((Join-Path $repoRoot "open-computer-mcp.cmd"), $mcpLauncher, [System.Text.Encoding]::Default)
 
+# A release ZIP may contain the optional reviewed native helper. Creating this
+# separate launcher does not run the helper or change the normal image launcher.
+$bundledHelper = Join-Path $repoRoot "native\bin\opencomputer-native.exe"
+if (Test-Path -LiteralPath $bundledHelper -PathType Leaf) {
+    $semanticLauncher = '@echo off' + "`r`n" + '"%~dp0.venv\Scripts\python.exe" -P -m opencomputer.app --native-helper "%~dp0native\bin\opencomputer-native.exe" %*' + "`r`n"
+    [System.IO.File]::WriteAllText((Join-Path $repoRoot "start-open-computer-semantic.cmd"), $semanticLauncher, [System.Text.Encoding]::Default)
+    Write-Host "Optional semantic panel: start-open-computer-semantic.cmd"
+}
+
 & $venvPython -P -m opencomputer.setup doctor --offline
 Assert-Success "Installed dependency check"
 Write-Host "Installed in $venvRoot"

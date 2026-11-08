@@ -50,6 +50,40 @@ class FakeClient:
         return {"ok": True}
 
 
+class SemanticClient(FakeClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.semantic_error = None
+        self.changed_controls = False
+
+    def call(self, name: str, arguments: dict | None = None) -> dict:
+        if name == "get_semantic_state":
+            self.calls.append((name, arguments))
+            if self.semantic_error:
+                raise ClientError(self.semantic_error, "Semantic observation rejected")
+            self.observations += 1
+            state = {"observation_id": f"obs-{self.observations}", "armed": self.armed,
+                     "control_generation": self.generation, "controller_instance_id": self.instance_id,
+                     "window": self.window(), "image_base64": self.image, "mime_type": "image/png",
+                     "observation_kind": "semantic", "semantic_fingerprint": "not-trusted-without-content"}
+            from opencomputer.semantic import SEMANTIC_COLUMNS
+            state["semantic"] = {"format": "controls-v1", "columns": list(SEMANTIC_COLUMNS),
+                "rows": [["e0", None, "window", "Fixture", None, 0, 0, 10, 10, True, False, False],
+                         ["e1", "e0", "button", "Changed" if self.changed_controls else "Test click", None,
+                          1, 2, 2, 2, True, True, False]]}
+            return state
+        result = super().call(name, arguments)
+        if name == "status":
+            result["selected_window"] = self.window()
+        elif name == "get_window_state":
+            result["window"] = self.window()
+        return result
+
+    def window(self) -> dict:
+        return {"id": "123", "pid": 7, "title": "Fixture",
+                "rect": {"x": 0, "y": 0, **self.rect}}
+
+
 class McpTests(unittest.TestCase):
     @staticmethod
     def wait_http_ready(port: int) -> None:
@@ -106,6 +140,148 @@ class McpTests(unittest.TestCase):
         blocks = result["result"]["content"]
         self.assertEqual(blocks[1], {"type": "image", "data": "cG5n", "mimeType": "image/png"})
         self.assertNotIn("image_base64", blocks[0]["text"])
+
+    def test_semantic_mcp_is_one_text_block_without_hidden_image_or_authority(self) -> None:
+        client = SemanticClient()
+        result = handle_message({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                                 "params": {"name": "get_semantic_state"}}, client)
+        blocks = result["result"]["content"]
+        self.assertFalse(result["result"]["isError"])
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0]["type"], "text")
+        projection = json.loads(blocks[0]["text"])
+        self.assertEqual(set(projection), {"observation_id", "width", "height", "semantic"})
+        for private in ("image_base64", "control_generation", "controller_instance_id", "pid", "semantic_fingerprint"):
+            self.assertNotIn(private, blocks[0]["text"])
+
+    def test_semantic_tool_is_zero_argument_and_image_request_is_local_only(self) -> None:
+        from opencomputer.server import dispatch, tool_definitions, ToolError
+        controller = Mock()
+        controller.get_semantic_state.return_value = {"ok": True}
+        self.assertEqual(dispatch(controller, "get_semantic_state", {}), {"ok": True})
+        with self.assertRaises(ToolError):
+            dispatch(controller, "get_semantic_state", {"window_id": "123"})
+        self.assertNotIn("request_image", {item["name"] for item in tool_definitions()})
+        tools = build_model_tools(tool_definitions(), observation_mode="auto")
+        self.assertIn("request_image", {item["function"]["name"] for item in tools})
+
+    def test_semantic_mcp_rejects_invalid_or_image_only_service_result(self) -> None:
+        client = SemanticClient()
+        invalid = client.call("get_semantic_state")
+        invalid["semantic"]["rows"][1][-1] = None
+        for state in (invalid, {"image_base64": "private-image", "mime_type": "image/png"}):
+            client = Mock()
+            client.call.return_value = state
+            result = handle_message({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                                     "params": {"name": "get_semantic_state"}}, client)
+            self.assertTrue(result["result"]["isError"])
+            self.assertEqual([item["type"] for item in result["result"]["content"]], ["text"])
+            self.assertNotIn("private-image", json.dumps(result))
+
+    def test_semantic_runner_sends_text_only_and_keeps_native_coordinates(self) -> None:
+        client = SemanticClient()
+        seen = []
+
+        def complete(_endpoint, _model, messages, _tools, **_options):
+            content = messages[-1]["content"]
+            self.assertIsInstance(content, str)
+            self.assertNotIn("image_base64", content)
+            self.assertNotIn(client.instance_id, content)
+            seen.append(content)
+            if len(seen) == 2:
+                return {"role": "assistant", "content": "done"}
+            return {"tool_calls": [{"id": "click-1", "type": "function", "function": {"name": "click",
+                    "arguments": json.dumps({"observation_id": f"obs-{client.observations}", "x": 9, "y": 9})}}]}
+
+        with patch("opencomputer.model_client._complete", side_effect=complete):
+            self.assertEqual(run_task(client, "http://127.0.0.1:9/v1", "fake", "Click", max_steps=2,
+                                      observation_mode="semantic", max_image_edge=1), "Model response: done")
+        clicks = [args for name, args in client.calls if name == "click"]
+        self.assertEqual((clicks[0]["x"], clicks[0]["y"]), (9, 9))
+        self.assertNotIn("get_window_state", [name for name, _ in client.calls])
+        self.assertEqual(client.calls[-1][0], "stop")
+
+    def test_same_pixels_but_changed_semantics_rejects_input(self) -> None:
+        client = SemanticClient()
+
+        def complete(*_args, **_kwargs):
+            client.changed_controls = True
+            return {"tool_calls": [{"id": "click-1", "type": "function", "function": {"name": "click",
+                    "arguments": json.dumps({"observation_id": f"obs-{client.observations}", "x": 1, "y": 2})}}]}
+
+        with patch("opencomputer.model_client._complete", side_effect=complete):
+            with self.assertRaisesRegex(RuntimeError, "controls changed"):
+                run_task(client, "http://127.0.0.1:9/v1", "fake", "Click", observation_mode="semantic")
+        self.assertNotIn("click", [name for name, _ in client.calls])
+
+    def test_auto_never_falls_back_or_uses_new_authority_after_model_planning(self) -> None:
+        for change in ("unavailable", "epoch"):
+            client = SemanticClient()
+
+            def complete(*_args, **_kwargs):
+                if change == "unavailable":
+                    client.semantic_error = "semantic_unavailable"
+                else:
+                    client.generation += 1
+                return {"tool_calls": [{"id": "click-1", "type": "function", "function": {"name": "click",
+                        "arguments": json.dumps({"observation_id": f"obs-{client.observations}", "x": 1, "y": 2})}}]}
+
+            with patch("opencomputer.model_client._complete", side_effect=complete):
+                with self.assertRaises((ClientError, RunCancelled)):
+                    run_task(client, "http://127.0.0.1:9/v1", "fake", "Click", observation_mode="auto")
+            self.assertNotIn("click", [name for name, _ in client.calls])
+            self.assertNotIn("get_window_state", [name for name, _ in client.calls])
+
+    def test_auto_fallback_is_limited_to_expected_inadequacy(self) -> None:
+        for code in ("semantic_unavailable", "semantic_incomplete", "semantic_empty"):
+            client, events = SemanticClient(), []
+            client.semantic_error = code
+            with patch("opencomputer.model_client._complete", return_value={"content": "done"}):
+                run_task(client, "http://127.0.0.1:9/v1", "fake", "Read", observation_mode="auto", metrics_callback=events.append)
+            self.assertEqual(sum(name == "get_semantic_state" for name, _ in client.calls), 1)
+            self.assertEqual(sum(name == "get_window_state" for name, _ in client.calls), 3)
+            self.assertIn({"phase": "observation_fallback", "reason": code, "observation_mode": "image"}, events)
+        for code in ("cancelled", "target_changed", "semantic_provider_failed", "capture_failed"):
+            client = SemanticClient()
+            client.semantic_error = code
+            with patch("opencomputer.model_client._complete") as complete:
+                with self.assertRaises(ClientError):
+                    run_task(client, "http://127.0.0.1:9/v1", "fake", "Read", observation_mode="auto")
+            complete.assert_not_called()
+            self.assertNotIn("get_window_state", [name for name, _ in client.calls])
+
+    def test_auto_image_request_is_intercepted_and_preserves_history_pair(self) -> None:
+        client, seen = SemanticClient(), []
+
+        def complete(_endpoint, _model, messages, _tools, **_options):
+            seen.append(copy.deepcopy(messages))
+            if len(seen) == 2:
+                self.assertIsInstance(messages[-1]["content"], list)
+                self.assertEqual(messages[-2]["role"], "tool")
+                self.assertEqual(messages[-2]["tool_call_id"], "image-1")
+                return {"content": "image observed"}
+            return {"tool_calls": [{"id": "image-1", "type": "function", "function": {"name": "request_image",
+                    "arguments": json.dumps({"observation_id": f"obs-{client.observations}"})}}]}
+
+        with patch("opencomputer.model_client._complete", side_effect=complete):
+            self.assertEqual(run_task(client, "http://127.0.0.1:9/v1", "fake", "Read", max_steps=2,
+                                      observation_mode="auto"), "Model response: image observed")
+        self.assertNotIn("request_image", [name for name, _ in client.calls])
+        self.assertEqual(sum(name == "get_semantic_state" for name, _ in client.calls), 3)
+        self.assertEqual(sum(name == "get_window_state" for name, _ in client.calls), 3)
+
+    def test_image_request_cannot_escape_semantic_mode_or_receipt_binding(self) -> None:
+        for mode, arguments in (("semantic", {"observation_id": "obs-3"}),
+                                ("auto", {"observation_id": "old"}),
+                                ("auto", {"observation_id": "obs-3", "extra": True})):
+            client = SemanticClient()
+            message = {"tool_calls": [{"id": "image-1", "type": "function", "function": {"name": "request_image",
+                       "arguments": json.dumps(arguments)}}]}
+            with patch("opencomputer.model_client._complete", return_value=message):
+                with self.assertRaises(RuntimeError):
+                    run_task(client, "http://127.0.0.1:9/v1", "fake", "Read", observation_mode=mode)
+            self.assertNotIn("get_window_state", [name for name, _ in client.calls])
+            self.assertEqual(client.calls[-1][0], "stop")
 
     def test_tool_errors_are_mcp_errors(self) -> None:
         result = handle_message({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "bad"}}, FakeClient())
