@@ -44,6 +44,24 @@ class BuildBoundaryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 support.checked_copy(root / "outside.txt", root / "out/file", root / "allowed")
 
+    def test_rejected_origin_diagnostic_is_bounded_and_redacted(self):
+        with tempfile.TemporaryDirectory(prefix="portable-origin-") as tmp:
+            base = Path(tmp)
+            source = (base / "unrelated/private-user/secret/runtime.dll").resolve()
+            diagnostic = support.origin_diagnostic(source, "_internal/runtime.dll", "BINARY",
+                                                    base / "owned/source", base / "owned/toc.json")
+            serialized = json.dumps(diagnostic)
+            self.assertNotIn(str(base), serialized)
+            self.assertNotIn("private-user", serialized)
+            self.assertEqual(diagnostic["source_basename"], "runtime.dll")
+            self.assertEqual(diagnostic["source_scope"], "outside-known-roots")
+            self.assertIsNone(diagnostic["source_relative"])
+            generated = (base / "owned/work/OpenComputer/other.zip").resolve()
+            diagnostic = support.origin_diagnostic(generated, "_internal/other.zip", "DATA",
+                                                    base / "owned/source", base / "owned/toc.json")
+            self.assertEqual(diagnostic["source_scope"], "generated-work")
+            self.assertEqual(diagnostic["source_relative"], "OpenComputer/other.zip")
+
     def test_bytecode_filename_rejects_private_and_absolute_paths(self):
         for filename in ("C:/Users/Builder/private.py", "C:/neutral/source.py", "/tmp/source.py"):
             with self.subTest(filename=filename), self.assertRaises(ValueError):

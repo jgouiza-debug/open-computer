@@ -64,6 +64,29 @@ def checked_copy(source: Path, target: Path, source_root: Path) -> None:
     shutil.copyfile(source, target)
 
 
+def origin_diagnostic(source: Path, destination: str, kind: str,
+                      root: Path, toc_path: Path) -> dict:
+    """Explain a rejected origin without printing an unknown absolute path."""
+    scope, tail = "outside-known-roots", None
+    known = [("build-venv", Path(sys.prefix)), ("python-base", Path(sys.base_prefix)),
+             ("staged-source", root), ("generated-work", toc_path.parent / "work"),
+             ("other-build-file", toc_path.parent)]
+    if os.environ.get("SystemRoot"):
+        known.append(("windows-system", Path(os.environ["SystemRoot"])))
+    for label, folder in known:
+        if source.is_relative_to(folder.resolve()):
+            scope = label
+            tail = source.relative_to(folder.resolve()).as_posix()
+            # Relative component names are enough to locate generated/runtime
+            # artifacts. Control characters and oversized values are not logged.
+            tail = re.sub(r"[^A-Za-z0-9_./+ -]", "?", tail)[:240]
+            break
+    return {"destination": relative(destination)[:240],
+            "toc_kind": kind if kind in {"BINARY", "DATA", "EXTENSION", "SYMLINK", "DEPENDENCY", "ZIPFILE", "PYZ"} else "unrecognized",
+            "source_basename": re.sub(r"[^A-Za-z0-9_.+-]", "?", source.name)[:100],
+            "source_scope": scope, "source_relative": tail}
+
+
 def validate_inputs(root: Path) -> dict:
     here = root / "packaging/windows"
     deps = load(here / "dependencies.json")
@@ -261,7 +284,8 @@ def finalize(root: Path, bundle: Path, toc_path: Path, wheels: Path,
         generated_base_zip = (toc_path.parent / "work/OpenComputer/base_library.zip").resolve()
         is_generated_base_zip = name == "_internal/base_library.zip" and source == generated_base_zip
         if not is_generated_base_zip and not any(source.is_relative_to(p.resolve()) for p in (Path(sys.base_prefix), Path(sys.prefix), root)):
-            raise ValueError("Collected runtime came from outside reviewed build inputs")
+            detail = origin_diagnostic(source, name, row["kind"], root, toc_path)
+            raise ValueError("Collected runtime came from outside reviewed build inputs: " + json.dumps(detail, sort_keys=True))
         if name in origins and digest(source) != digest(origins[name]):
             raise ValueError("Shared COLLECT destination has conflicting source bytes")
         origins[name] = source
