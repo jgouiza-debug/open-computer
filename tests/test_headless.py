@@ -23,6 +23,46 @@ class FakeHotkey:
         self.closed = True
 
 
+class FakeOutline:
+    """Pure state machine, never creates a window or invokes native APIs."""
+
+    def __init__(self):
+        self.trace = []
+        self.events = []
+        self.visible = False
+        self.hidden = False
+        self.closed = False
+        self.failed = False
+        self.rect = None
+
+    def check_health(self):
+        if self.failed or self.closed:
+            raise RuntimeError("Fake feedback failure")
+
+    def emit(self, event):
+        self.trace.append(event["type"])
+        self.events.append(event)
+        if not self.hidden and event["type"] in {"target", "armed"}:
+            self.visible = True
+
+    def wait_visible(self, timeout=2):
+        self.trace.append("visible_ack")
+        if not self.visible:
+            raise RuntimeError("No visible frame")
+
+    def update_target(self, rect):
+        self.rect = rect
+
+    def hide(self):
+        self.trace.append("hide")
+        self.hidden = True
+        self.visible = False
+
+    def close(self):
+        self.hide()
+        self.closed = True
+
+
 class Backend(FakeBackend):
     def __init__(self):
         super().__init__()
@@ -59,6 +99,133 @@ class HeadlessTests(unittest.TestCase):
             windows = discover_windows(backend)
         self.assertEqual(windows[0]["process_start"], backend.process_start)
         self.assertFalse(backend.actions)
+
+    def test_feedback_ack_precedes_arm_and_stop_hide_precedes_event(self):
+        outline = FakeOutline()
+        session, _ = self.session(allow_input=True, outline_factory=lambda: outline)
+        self.assertLess(outline.trace.index("target"), outline.trace.index("visible_ack"))
+        self.assertLess(outline.trace.index("visible_ack"), outline.trace.index("armed"))
+        self.assertEqual(session.call("status")["feedback"], {"enabled": True, "healthy": True})
+        session.stop()
+        self.assertLess(outline.trace.index("hide"), outline.trace.index("stopped"))
+        outline.emit({"type": "armed"})
+        self.assertFalse(outline.visible)
+        self.assertTrue(session.controller.status()["stopped"])
+
+    def test_read_only_session_also_shows_feedback_but_fake_default_has_none(self):
+        outline = FakeOutline()
+        session, _ = self.session(outline_factory=lambda: outline)
+        self.assertTrue(outline.visible)
+        self.assertFalse(session.controller.status()["armed"])
+        without, _ = self.session()
+        self.assertEqual(without.call("status")["feedback"], {"enabled": False, "healthy": False})
+
+    def test_failed_visible_ack_never_arms_and_closes_partial_resources(self):
+        outline, backend = FakeOutline(), Backend()
+        def fail(**_):
+            raise RuntimeError("No visible frame")
+        outline.wait_visible = fail
+        with self.assertRaisesRegex(RuntimeError, "No visible frame"):
+            HeadlessSession(backend, window_id="demo", pid=42, process_start=backend.process_start,
+                allow_input=True, hotkey_factory=FakeHotkey, outline_factory=lambda: outline)
+        self.assertNotIn("armed", outline.trace)
+        self.assertTrue(outline.closed)
+        self.assertTrue(backend.cancel_event.is_set())
+        self.assertFalse(backend.actions)
+
+    def test_feedback_failure_at_authority_boundary_prevents_input(self):
+        outline = FakeOutline()
+        session, backend = self.session(allow_input=True, outline_factory=lambda: outline)
+        receipt = session.call("get_window_state")
+        outline.failed = True
+        self.error("overlay_error", lambda: session.call("click", {"observation_id": receipt["observation_id"], "x": 1, "y": 1}))
+        self.assertFalse(backend.actions)
+        self.assertTrue(backend.cancel_event.is_set())
+        self.assertTrue(outline.hidden)
+        self.assertEqual(session.call("status")["feedback"], {"enabled": True, "healthy": False})
+
+    def test_watchdog_updates_geometry_and_revokes_lost_identity(self):
+        outline = FakeOutline()
+        session, backend = self.session(allow_input=True, outline_factory=lambda: outline)
+        backend.window["rect"]["x"] = -50
+        deadline = time.monotonic() + 1
+        while (outline.rect is None or outline.rect["x"] != -50) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertIsNotNone(outline.rect)
+        self.assertEqual(outline.rect["x"], -50)
+        backend.process_start = "replacement"
+        self.assertTrue(backend.cancel_event.wait(1))
+        self.assertTrue(outline.hidden)
+        self.assertTrue(session.controller.status()["stopped"])
+
+    def test_close_reaps_feedback_even_if_controller_close_fails(self):
+        outline = FakeOutline()
+        session, _ = self.session(allow_input=True, outline_factory=lambda: outline)
+        with patch.object(session.controller, "close", side_effect=RuntimeError("Provider close failed")):
+            with self.assertRaisesRegex(RuntimeError, "Provider close failed"):
+                session.close()
+        self.assertTrue(outline.closed)
+        self.assertTrue(outline.hidden)
+
+    def test_controller_feedback_bridge_omits_titles_and_input_text(self):
+        outline = FakeOutline()
+        session, backend = self.session(allow_input=True, outline_factory=lambda: outline)
+        session.controller._emit("action", selected_window=backend.window,
+            action="type_text", text="PRIVATE_INPUT", x=123, y=456)
+        event = outline.events[-1]
+        self.assertNotIn("text", event)
+        self.assertNotIn("title", event["selected_window"])
+        self.assertEqual((event["x"], event["y"]), (123, 456))
+
+    def test_controller_disarm_event_ends_the_headless_grant(self):
+        outline = FakeOutline()
+        session, backend = self.session(allow_input=True, outline_factory=lambda: outline)
+        session.controller.disarm()
+        self.error("grant_revoked", lambda: session.call("type_text", {"observation_id": "old", "text": "no"}))
+        self.assertFalse(backend.actions)
+
+    def test_stop_cancels_input_and_semantics_before_blocking_feedback_hide(self):
+        outline = FakeOutline()
+        session, backend = self.session(allow_input=True, outline_factory=lambda: outline)
+        entered, release, semantic_cancel = threading.Event(), threading.Event(), threading.Event()
+        session.controller._semantic_cancel = semantic_cancel
+        original_hide = outline.hide
+        def blocking_hide():
+            entered.set()
+            if not release.wait(2):
+                raise RuntimeError("Test did not release feedback")
+            original_hide()
+        outline.hide = blocking_hide
+        results = []
+        worker = threading.Thread(target=lambda: results.append(session.stop()))
+        worker.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            self.assertTrue(backend.cancel_event.is_set(), "Input cancellation waited for feedback")
+            self.assertTrue(semantic_cancel.is_set(), "Semantic cancellation waited for feedback")
+        finally:
+            release.set()
+            worker.join(timeout=2)
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(results[0]["stopped"])
+        session.close()
+        self.assertTrue(outline.closed)
+
+    def test_event_only_cancel_does_not_wait_for_controller_authority_lock(self):
+        session, backend = self.session(allow_input=True)
+        done, semantic_cancel = threading.Event(), threading.Event()
+        session.controller._semantic_cancel = semantic_cancel
+        def cancel():
+            session.controller.request_cancel()
+            done.set()
+        with session.controller._lock:
+            worker = threading.Thread(target=cancel)
+            worker.start()
+            completed = done.wait(0.5)
+        worker.join(timeout=1)
+        self.assertTrue(completed)
+        self.assertTrue(backend.cancel_event.is_set())
+        self.assertTrue(semantic_cancel.is_set())
 
     def test_input_requires_process_start_and_bounds(self):
         for options in ({"process_start": None, "allow_input": True}, {"ttl": 0},

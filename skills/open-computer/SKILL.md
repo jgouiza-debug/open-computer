@@ -28,6 +28,10 @@ on the working directory. Models and the agent host are supplied separately.
    600); the action budget is 1..256 (default 64). Use `--max-actions` to set it.
    Use the runtime's `--help` for options.
    Ctrl+Alt+Esc stops the session independently of tool calls.
+   A passive blue outline identifies the bound target while this session is
+   active, including during model planning. It does not take focus or intercept
+   clicks. If the frame cannot be presented safely, control ends; do not bypass
+   that error. The headless indicator is a frame, not an animated AI cursor.
 3. The host must own the stdio process for this task and disable automatic restart.
    Do not put an input-authorizing invocation in permanent global MCP settings.
    If the host cannot own a task-local stdio server, use the shell-only `headless
@@ -53,6 +57,8 @@ on the working directory. Models and the agent host are supplied separately.
 - Stop when done or cancelled. Stop, expiry, EOF and budget exhaustion end this
   grant; no MCP tool can arm, reset or retarget it. A new authorized task needs a
   new host launch. Preserve unrelated windows and documents.
+  The outline disappears when the session stops or loses its target. Drawing it
+  is local work and does not consume model tokens.
 
 ## Installation and diagnostics
 

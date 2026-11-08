@@ -52,6 +52,13 @@ class Controller:
             if self._semantic_cancel is not None:
                 self._semantic_cancel.set()
 
+    def request_cancel(self) -> None:
+        """Signal input/read cancellation before any authority or display wait."""
+        self._cancel.set()
+        active_read = self._semantic_cancel
+        if active_read is not None:
+            active_read.set()
+
     def _require_open(self) -> None:
         if self._closed:
             self._fail("closed", "Controller is closed")
@@ -176,7 +183,7 @@ class Controller:
             return self.status()
 
     def stop(self) -> dict:
-        self._cancel.set()  # Immediate, including while the operation lock is held.
+        self.request_cancel()
         self._cancel_semantic()
         with self._lock:
             self._stopped = True

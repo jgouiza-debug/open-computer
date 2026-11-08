@@ -45,7 +45,8 @@ class HeadlessSession:
     def __init__(self, backend=None, *, window_id: str, pid: int,
                  process_start: str | None = None, allow_input: bool = False,
                  ttl: int = 600, max_actions: int = 64, semantic_provider=None,
-                 hotkey_factory: Callable = SafetyHotkey, clock: Callable = time.monotonic) -> None:
+                 hotkey_factory: Callable = SafetyHotkey, clock: Callable = time.monotonic,
+                 outline_factory: Callable | None = None) -> None:
         if (type(ttl) is not int or not 1 <= ttl <= 3600 or
                 type(max_actions) is not int or not 1 <= max_actions <= 256 or
                 type(pid) is not int or pid <= 0 or not isinstance(window_id, str) or not window_id or
@@ -68,11 +69,22 @@ class HeadlessSession:
         self._reason = "grant_revoked"
         self.hotkey = None
         self._watcher = None
-        self.controller = Controller(self.backend, semantic_provider=semantic_provider,
+        self.outline = None
+        self._feedback_failed = False
+        self.controller = Controller(self.backend, event_sink=self._outline_event,
+                                     semantic_provider=semantic_provider,
                                      authority_validator=self._validate, verify_image_receipts=True)
         try:
+            if self.backend.real or outline_factory is not None:
+                if outline_factory is None:
+                    from .headless_overlay import NativeOutline
+                    outline_factory = NativeOutline
+                self.outline = outline_factory()
+                self.outline.check_health()
             self.hotkey = hotkey_factory(self.stop)
             self.controller.select_window(window_id)
+            if self.outline is not None:
+                self.outline.wait_visible(timeout=2)
             if allow_input:
                 self.controller.arm()
             self._watcher = threading.Thread(target=self._watch, name="headless-grant-watchdog", daemon=True)
@@ -81,9 +93,44 @@ class HeadlessSession:
             self.close()
             raise
 
+    def _outline_event(self, event: dict) -> None:
+        """Controller callbacks only enqueue sanitized metadata, never OS work."""
+        if event.get("type") in {"stopped", "disarmed", "error", "cancelled"}:
+            self._revoked.set()
+        if self.outline is None:
+            return
+        try:
+            message = {key: event[key] for key in ("type", "event", "action", "x", "y") if key in event}
+            window = event.get("selected_window")
+            if isinstance(window, dict):
+                message["selected_window"] = {key: window[key] for key in ("id", "pid") if key in window}
+                message["selected_window"]["rect"] = dict(window["rect"])
+            self.outline.emit(message)
+        except Exception:
+            self._feedback_failed = True
+            self._reason = "overlay_error"
+            self._revoked.set()
+            raise  # Controller._emit cancels input and latches its stop state.
+
+    def _check_outline(self) -> None:
+        if self.outline is None:
+            return
+        try:
+            self.outline.check_health()
+        except Exception as exc:
+            self._feedback_failed = True
+            self._reason = "overlay_error"
+            self.stop()
+            raise ControllerError("overlay_error", "Visual feedback failed; control stopped") from exc
+
+    def _feedback_status(self) -> dict:
+        return {"enabled": self.outline is not None,
+                "healthy": self.outline is not None and not self._feedback_failed and not self._done.is_set()}
+
     def _validate(self, window: dict) -> None:
         if self._revoked.is_set():
             raise ControllerError(self._reason, "Task authority has ended; launch a new authorized session")
+        self._check_outline()
         if self.clock() >= self.expires:
             self._reason = "grant_expired"
             self._revoked.set()
@@ -105,6 +152,23 @@ class HeadlessSession:
                     self._reason = "grant_expired"
                 self.stop()
                 return
+            if self.outline is not None:
+                # Native metadata reads stay outside the controller authority lock.
+                try:
+                    window = self.backend.get_window(self.window_id)
+                    self._validate(window)
+                except Exception as exc:
+                    if not self._revoked.is_set():
+                        self._reason = getattr(exc, "code", "target_changed")
+                    self.stop()
+                    return
+                try:
+                    self.outline.update_target(dict(window["rect"]))
+                except Exception:
+                    self._feedback_failed = True
+                    self._reason = "overlay_error"
+                    self.stop()
+                    return
 
     def tools(self) -> list[dict]:
         tools = [tool for tool in tool_definitions() if tool["name"] not in {"select_window", "list_windows"}]
@@ -135,7 +199,8 @@ class HeadlessSession:
             if name == "status":
                 if arguments:
                     raise ToolError("invalid_arguments", "Status accepts no arguments")
-                return {**self.controller.status(), "grant": {"process_start": self.process_start,
+                return {**self.controller.status(), "feedback": self._feedback_status(),
+                    "grant": {"process_start": self.process_start,
                     "remaining_actions": max(0, self.max_actions - self._used),
                     "remaining_seconds": max(0, round(self.expires - self.clock(), 3)),
                     "allow_input": self.allow_input, "revoked": self._revoked.is_set()}}
@@ -169,7 +234,23 @@ class HeadlessSession:
 
     def stop(self) -> dict:
         self._revoked.set()
-        return self.controller.stop()
+        self.controller.request_cancel()  # Never wait for feedback before cancellation.
+        if self.outline is not None:
+            try:
+                self.outline.hide()  # Terminal latch precedes any later queued event.
+            except Exception:
+                self._feedback_failed = True
+                self._reason = "overlay_error"
+        try:
+            result = self.controller.stop()
+        except ControllerError as exc:
+            if exc.code != "overlay_error":
+                raise
+            # Controller._emit already cancelled input. A dead feedback sink must
+            # not prevent stop acknowledgement or the outer cleanup path.
+            self._feedback_failed = True
+            result = self.controller.status()
+        return {**result, "feedback": self._feedback_status()}
 
     def close(self) -> None:
         if self._done.is_set():
@@ -182,9 +263,15 @@ class HeadlessSession:
                 if self.hotkey:
                     self.hotkey.close()
             finally:
-                self.controller.close()
-                if self._watcher and self._watcher is not threading.current_thread():
-                    self._watcher.join(timeout=0.5)
+                try:
+                    self.controller.close()
+                finally:
+                    try:
+                        if self.outline is not None:
+                            self.outline.close()
+                    finally:
+                        if self._watcher and self._watcher is not threading.current_thread():
+                            self._watcher.join(timeout=0.5)
 
     def __enter__(self):
         return self

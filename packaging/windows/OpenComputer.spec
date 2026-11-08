@@ -15,7 +15,7 @@ imports = [
     "opencomputer.app", "opencomputer.cli", "opencomputer.mcp", "opencomputer.setup",
     "opencomputer.model_client", "opencomputer.controller", "opencomputer.backend",
     "opencomputer.semantic", "opencomputer.native_client", "opencomputer.overlay",
-    "opencomputer.server", "opencomputer.headless", "opencomputer.safety",
+    "opencomputer.server", "opencomputer.headless", "opencomputer.safety", "opencomputer.headless_overlay",
     "tkinter", "tkinter.ttk", "PIL.ImageGrab", "PIL.ImageTk",
 ]
 imports += collect_submodules("PIL", filter=lambda name: not name.startswith("PIL.tests"))

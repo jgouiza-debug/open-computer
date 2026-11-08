@@ -1,0 +1,84 @@
+{
+  "schema": "opencomputer.outline-validation/1",
+  "date": "2026-11-08",
+  "passed": true,
+  "source_sha256": {
+    "opencomputer/headless_overlay.py": "b45c81aa640696667e88de4557a54e65b7e01395a93bda2c5dde9c46bad2f784",
+    "opencomputer/headless.py": "8edc87d4a952e0d284c49d85576ef7df91d1703c2102f6a12a51033143d0c451",
+    "opencomputer/controller.py": "7b1d495c90e58b83d1769d119104c49f552309661f8b40a29c4c5dd695185f7d",
+    "scripts/headless_outline_smoke.py": "d90a57c150758a2ff23fc6e90cad0c8d359a8ca981079c447ddfa321822d1847"
+  },
+  "unit_tests": {
+    "passed": 281,
+    "run": 282,
+    "skipped": 1
+  },
+  "native_input_attempts": 0,
+  "model_requests": 0,
+  "foreground_unchanged": true,
+  "fixture_thread_exited": true,
+  "tk_modules_loaded": [],
+  "stages": [
+    {
+      "case": "normal",
+      "passed": true,
+      "startup_ms": 17.44,
+      "stop_hide_ms": 20.51,
+      "target_pixels_equal": true,
+      "edge_mode": "outside"
+    },
+    {
+      "case": "readonly",
+      "passed": true,
+      "startup_ms": 18.74,
+      "stop_hide_ms": 20.631,
+      "target_pixels_equal": true,
+      "edge_mode": "outside"
+    },
+    {
+      "case": "edge",
+      "passed": true,
+      "startup_ms": 16.816,
+      "stop_hide_ms": 20.467,
+      "target_pixels_equal": true,
+      "edge_mode": "inset"
+    },
+    {
+      "case": "monitor-fill",
+      "passed": true,
+      "startup_ms": 17.422,
+      "stop_hide_ms": 20.952,
+      "target_pixels_equal": true,
+      "edge_mode": "inset"
+    },
+    {
+      "case": "minimize",
+      "passed": true,
+      "startup_ms": 18.323,
+      "stop_hide_ms": 0.043,
+      "target_pixels_equal": true,
+      "edge_mode": "outside"
+    },
+    {
+      "case": "expiry",
+      "passed": true,
+      "startup_ms": 16.096,
+      "stop_hide_ms": 0.103,
+      "target_pixels_equal": true,
+      "edge_mode": "outside"
+    },
+    {
+      "case": "fault",
+      "passed": true,
+      "startup_ms": 18.364,
+      "stop_hide_ms": 0.112,
+      "target_pixels_equal": true,
+      "edge_mode": "outside"
+    }
+  ],
+  "limitations": [
+    "Source runtime against a disposable Win32 fixture; not a packaged-runtime or arbitrary-application test.",
+    "No model task or input action was attempted; startup timing is not model task latency.",
+    "Headless indicator is the frame only, without an animated AI cursor."
+  ]
+}

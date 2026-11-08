@@ -10,6 +10,9 @@ or global Python/Rust installation is required. The agent host binds one Windows
 application to the user's task, observes control text or screenshots, and issues
 mouse and keyboard actions within that session. Target applications can be
 visible and activated normally.
+A passive blue outline identifies the bound task window without taking focus or
+intercepting clicks. See the [activity indicator](docs/activity-indicator.md) for
+its lifecycle, capture checks and validation requirements.
 
 This is an early implementation, not a drop-in replacement for Codex's private
 runtime. It follows the same **observe → one action → observe again** workflow.
@@ -70,7 +73,8 @@ by the tested configuration; no general performance gain is promised.
 
 The following workflow uses the earlier desktop panel and its separate MCP
 bridge. It remains available for users who choose it; it is not required by the
-headless skill. The blue outline and AI cursor belong to this panel workflow.
+headless skill. The headless skill has its own passive outline; the animated AI
+cursor remains a legacy panel feature.
 
 ![Legacy optional Open Computer panel in demo mode](docs/demo-panel.png)
 

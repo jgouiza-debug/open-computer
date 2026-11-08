@@ -3,6 +3,11 @@
 The primary workflow is an installable Windows agent skill backed by a headless
 console runtime. No Open Computer panel or wizard is required. The host acts on
 the user's desktop task and may bring its target application into the foreground.
+Bound native sessions show a passive blue target outline, including while a
+model is thinking. The frame does not take focus or intercept clicks. This
+source change is separate from the candidate installation evidence below. Its
+native fixture check passed seven cases, with unchanged foreground focus and
+pixel-identical target captures. See the [activity indicator](activity-indicator.md).
 
 **v0.1.6 is still a candidate; its release assets are not published.** The
 downloaded package from commit `469b26d` passed clean PowerShell 5 and PowerShell 7
@@ -86,6 +91,15 @@ resume it. Stop, Ctrl+Alt+Esc, expiry, budget exhaustion, EOF and owner
 cancellation end the session. A new authorized task needs a new host launch.
 This confines accidental task drift; it is not an OS security boundary against
 a malicious program running as the same user.
+
+The native outline is part of both bound read-only and input sessions. Its
+initial visible frame must be acknowledged before input can be armed. It follows
+the bound window, and stop, expiry, target loss or feedback failure hide it.
+Normal borders lie outside the target client area. At a screen edge the inset
+fallback requires verified capture exclusion; unsupported geometry or failed
+feedback ends control. The current headless indicator is the frame only. The
+legacy panel's animated AI cursor is not part of this headless implementation.
+Rendering the frame makes no model requests and adds no model tokens.
 
 ## Choose the host workflow
 

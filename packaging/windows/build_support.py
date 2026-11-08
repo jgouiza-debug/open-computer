@@ -30,7 +30,7 @@ NATIVE_SOURCE = "05c3721b3962ace619441431fcdb8e4eb4be2e93"
 NATIVE_TREE = "bb5910da594cefabb3cb7e00b41c1e0ca14c1199"
 APP_MODULES = (
     "__init__", "app", "backend", "cli", "controller", "mcp", "model_client",
-    "native_client", "overlay", "semantic", "server", "setup", "headless", "safety",
+    "native_client", "overlay", "semantic", "server", "setup", "headless", "safety", "headless_overlay",
 )
 PACKAGING_FILES = (
     "OpenComputer.spec", "gui_entry.py", "cli_entry.py", "build_support.py",

@@ -188,6 +188,9 @@ class BuildBoundaryTests(unittest.TestCase):
             target = Path(tmp) / "new-source"
             support.stage(ROOT, target)
             self.assertTrue((target / "opencomputer/model_client.py").is_file())
+            staged_outline = target / "opencomputer/headless_overlay.py"
+            self.assertTrue(staged_outline.is_file())
+            self.assertEqual(staged_outline.read_bytes(), (ROOT / "opencomputer/headless_overlay.py").read_bytes())
             self.assertFalse((target / ".git").exists())
             self.assertFalse((target / "tests").exists())
             self.assertFalse((target / "artifacts").exists())
