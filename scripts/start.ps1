@@ -6,9 +6,14 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $projectDirectory = Split-Path -Parent $PSScriptRoot
+$pythonExecutable = Join-Path $projectDirectory '.venv\Scripts\python.exe'
+if (-not (Test-Path -LiteralPath $pythonExecutable -PathType Leaf)) {
+    [Console]::Error.WriteLine('Open Computer is not installed here. Run install.cmd first.')
+    exit 1
+}
 Set-Location -LiteralPath $projectDirectory
-$appArguments = @('-m', 'opencomputer.app', '--port', "$Port")
+$appArguments = @('-P', '-m', 'opencomputer.app', '--port', "$Port")
 if ($Demo) { $appArguments += '--demo' }
 if ($NoServer) { $appArguments += '--no-server' }
-& python @appArguments
+& $pythonExecutable @appArguments @args
 exit $LASTEXITCODE

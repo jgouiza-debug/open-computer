@@ -56,6 +56,94 @@ class SetupTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 setup.build_mcp_config(package_root=temporary)
 
+    def test_config_normalizes_pythonw_to_existing_console_interpreter(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            windowed = Path(temporary) / "pythonw.exe"
+            console = windowed.with_name("python.exe")
+            windowed.touch()
+            with self.assertRaisesRegex(ValueError, "Console python.exe"):
+                setup.build_mcp_config(windowed)
+            console.touch()
+            config = setup.build_mcp_config(windowed)
+            self.assertEqual(config["mcpServers"]["open-computer"]["command"], str(console.resolve()))
+
+    def test_config_exports_utf8_and_requires_explicit_overwrite(self):
+        with tempfile.TemporaryDirectory(prefix="MCP café ") as temporary:
+            interpreter = Path(temporary) / "Python café.exe"
+            interpreter.touch()
+            output = Path(temporary) / "MCP config é.json"
+            arguments = ["config", "--python", str(interpreter), "--output", str(output)]
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                self.assertEqual(setup.main(arguments), 0)
+            original = output.read_bytes()
+            self.assertIn("café".encode(), original)
+            self.assertFalse(original.startswith(b"\xef\xbb\xbf"))
+            self.assertEqual(json.loads(original), setup.build_mcp_config(interpreter))
+            self.assertIn(str(output), stdout.getvalue())
+            self.assertNotIn("mcpServers", stdout.getvalue())
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                setup.main(arguments)
+            self.assertEqual(output.read_bytes(), original)
+            output.write_text("old", encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(setup.main([*arguments, "--force"]), 0)
+            self.assertEqual(output.read_bytes(), original)
+
+    def test_config_output_rejects_invalid_flags_parent_and_directory(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            setup.main(["config", "--force"])
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            for output in (directory, directory / "missing" / "settings.json"):
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    setup.main(["config", "--output", str(output), "--force"])
+            self.assertFalse((directory / "missing").exists())
+
+    def test_config_force_rejects_symlink_and_preserves_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target, link = root / "target.json", root / "link.json"
+            target.write_text("keep", encoding="utf-8")
+            try:
+                link.symlink_to(target)
+            except OSError:
+                self.skipTest("Symlink creation unavailable")
+            for force in (False, True):
+                with self.assertRaises(ValueError):
+                    setup.write_mcp_config({"example": True}, link, force=force)
+            self.assertEqual(target.read_text(encoding="utf-8"), "keep")
+
+    def test_config_failed_force_write_preserves_existing_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "settings.json"
+            target.write_text("keep", encoding="utf-8")
+            with patch.object(setup.os, "replace", side_effect=OSError("cannot replace")):
+                with self.assertRaises(OSError):
+                    setup.write_mcp_config({"example": True}, target, force=True)
+            self.assertEqual(target.read_text(encoding="utf-8"), "keep")
+            self.assertEqual(list(target.parent.iterdir()), [target])
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows PowerShell launcher guard")
+    def test_start_launcher_missing_venv_never_falls_back_to_global_python(self):
+        shell = shutil.which("powershell.exe") or shutil.which("pwsh")
+        if shell is None:
+            self.skipTest("PowerShell unavailable")
+        with tempfile.TemporaryDirectory(prefix="launcher path ") as temporary:
+            root = Path(temporary)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            shutil.copyfile(Path(setup.__file__).resolve().parents[1] / "scripts/start.ps1", scripts / "start.ps1")
+            marker = root / "global-python-called.txt"
+            (root / "python.cmd").write_text(f'@echo global > "{marker}"\n', encoding="utf-8")
+            result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                                     "-File", str(scripts / "start.ps1"), "-Demo", "-Port", "0"],
+                                    env={**os.environ, "PATH": str(root) + os.pathsep + os.environ.get("PATH", "")},
+                                    cwd=root, capture_output=True, text=True, timeout=15)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("install.cmd", result.stdout + result.stderr)
+            self.assertFalse(marker.exists())
+
     def test_config_imports_from_path_with_spaces_outside_cwd(self):
         with tempfile.TemporaryDirectory(prefix="Open Computer setup ") as temporary:
             root = Path(temporary)

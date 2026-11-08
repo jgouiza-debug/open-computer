@@ -89,40 +89,37 @@ The toolkit does not make a text-only model see.
 
 ## Connect an agent
 
-Start the desktop panel first. Generate an MCP configuration that uses this
-installation's absolute paths, including paths with spaces:
+Start the desktop panel and keep it disarmed. Click **Copy MCP config**, or
+generate a configuration file using this installation's absolute paths:
 
 ```powershell
-.\.venv\Scripts\python.exe -m opencomputer.setup config
+.\.venv\Scripts\python.exe -m opencomputer.setup config --output open-computer.mcp.json
 ```
 
-Import the resulting `mcpServers` JSON into your agent's MCP settings. For
-Unsloth, use `config --format unsloth` and import the JSON into its MCP settings.
-The generated configuration contains no service token. As a generic example,
-an environment where `python` already has Open Computer installed can use:
+Import the generated `open-computer` entry into your agent's MCP settings,
+preserving any other servers already configured. Export refuses to overwrite an
+existing file unless you add `--force`; omit `--output` to print JSON instead.
+The generated configuration contains no service token. See the
+[client setup guide](docs/clients.md) for Unsloth and LM Studio instructions.
 
-```json
-{
-  "mcpServers": {
-    "opencomputer": {
-      "command": "python",
-      "args": ["-m", "opencomputer.mcp"]
-    }
-  }
-}
-```
+Ask the agent to call `status` first. A successful response verifies the bridge
+while the panel remains disarmed. Select a target window locally and request a
+fresh observation; arm control when you are ready to permit input.
 
 The bridge reads the local connection file at `~/.opencomputer/connection.json`.
 Pass `--connection PATH` to use a different instance. Keep that file private;
-it contains the service token.
+it contains the service token. After restarting the panel, call `status` or
+request a fresh observation before any state-changing tool. The bridge reloads
+the connection file, but never replays an action across a changed connection.
 
-Unsloth can import the same MCP server configuration. Registration, loading the
-Open Computer skill, and a real read-only status call have been verified with
-Unsloth; successful visual task
-completion has not. Unsloth resizes images to a maximum edge of 1024 pixels while
+Unsloth registration, skill loading, status, and a real text-only semantic
+observation of nine Windows controls have been verified. Autonomous task
+completion through Unsloth has not. Unsloth resizes images to a maximum edge of 1024 pixels while
 the tool keeps the original dimensions. Follow the scaling instructions in
 [docs/SKILL.md](docs/SKILL.md), or start with a target smaller than 1024 pixels on
-each edge. Use a vision-capable model that supports tool calls.
+each edge. Image observations need a vision-capable model with tool calling;
+semantic observations can use a text model where the accessibility tree covers
+the task.
 
 For an already-running local vision model with OpenAI-compatible tool calling:
 
@@ -131,7 +128,9 @@ For an already-running local vision model with OpenAI-compatible tool calling:
 ```
 
 Replace the model name and endpoint with your server's actual configuration.
-Select and arm the intended window locally before requesting input actions.
+Select and arm the intended window locally before starting this runner, even
+for a description task: the runner requires an armed session. For observations
+while disarmed, use the MCP read-only tools directly.
 The runner does not load models, start model servers, or arm control. Model and
 server compatibility must be tested for the specific setup you choose.
 

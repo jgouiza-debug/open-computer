@@ -7,8 +7,10 @@ import importlib
 from importlib import metadata
 import inspect
 import json
+import os
 from pathlib import Path
 import sys
+import tempfile
 from typing import Callable
 
 from .mcp import LocalClient
@@ -32,6 +34,10 @@ def build_mcp_config(python_executable: str | Path | None = None,
     executable = Path(python_executable or sys.executable).expanduser().resolve()
     if not executable.is_file():
         raise ValueError("Python executable does not exist")
+    if executable.name.casefold() == "pythonw.exe":
+        executable = executable.with_name("python.exe")
+        if not executable.is_file():
+            raise ValueError("Console python.exe must exist beside pythonw.exe for MCP stdio")
     root = Path(package_root or Path(__file__).resolve().parent.parent).expanduser().resolve()
     if not (root / "opencomputer" / "mcp.py").is_file():
         raise ValueError("Package root does not contain opencomputer/mcp.py")
@@ -39,6 +45,35 @@ def build_mcp_config(python_executable: str | Path | None = None,
         "command": str(executable), "args": ["-P", "-m", "opencomputer.mcp"],
         "env": {"PYTHONPATH": str(root)},
     }}}
+
+
+def write_mcp_config(config: dict, path: str | Path, *, force: bool = False) -> Path:
+    """Export only to an explicit file; never merge or follow an output symlink."""
+    destination = Path(path).expanduser().absolute()
+    if destination.is_symlink() or destination.is_dir():
+        raise ValueError("Output must be a regular file path, not a directory or symlink")
+    if not destination.parent.is_dir():
+        raise ValueError("Output directory does not exist; create it first")
+    text = json.dumps(config, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+    if not force:
+        with destination.open("x", encoding="utf-8", newline="\n") as stream:
+            stream.write(text)
+        return destination
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n", dir=destination.parent,
+                                         prefix=".opencomputer-config-", suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(text)
+        if destination.is_symlink() or destination.is_dir():
+            raise ValueError("Output became a directory or symlink; refusing to replace it")
+        # Replacing the directory entry never writes through a swapped symlink.
+        os.replace(temporary, destination)
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return destination
 
 
 def dependency_checks() -> list[dict]:
@@ -115,6 +150,8 @@ def main(argv: list[str] | None = None) -> int:
     config_parser.add_argument("--python", type=Path, dest="python_executable")
     config_parser.add_argument("--format", choices=("generic", "unsloth"), default="generic",
                                help="Both formats use the portable mcpServers object")
+    config_parser.add_argument("--output", type=Path, help="Write UTF-8 JSON to this file; its parent must exist")
+    config_parser.add_argument("--force", action="store_true", help="Explicitly replace an existing output file")
     doctor_parser = commands.add_parser("doctor", help="Check dependencies and live disarmed GUI")
     doctor_parser.add_argument("--offline", action="store_true", help="Check dependencies without contacting the GUI")
     doctor_parser.add_argument("--connection", type=Path, default=DEFAULT_CONNECTION_PATH)
@@ -122,10 +159,17 @@ def main(argv: list[str] | None = None) -> int:
                                help="Check an explicit helper file only; never launch it")
     options = parser.parse_args(argv)
     if options.command == "config":
+        if options.force and options.output is None:
+            parser.error("--force requires --output")
         try:
             result = build_mcp_config(options.python_executable)
-        except ValueError as exc:
+            if options.output is not None:
+                destination = write_mcp_config(result, options.output, force=options.force)
+        except (ValueError, OSError) as exc:
             parser.error(str(exc))
+        if options.output is not None:
+            print(f"Wrote MCP config to {destination}")
+            return 0
         print(json.dumps(result, indent=2))
         return 0
     result = run_doctor(options.connection, include_live=not options.offline,
